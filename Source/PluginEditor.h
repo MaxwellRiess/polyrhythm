@@ -28,9 +28,10 @@ public:
 
     void paint   (juce::Graphics& g) override;
     void resized () override;
-    void mouseDown  (const juce::MouseEvent&) override;
-    void mouseEnter (const juce::MouseEvent&) override;
-    void mouseExit  (const juce::MouseEvent&) override;
+    void mouseDown       (const juce::MouseEvent&) override;
+    void mouseEnter      (const juce::MouseEvent&) override;
+    void mouseExit       (const juce::MouseEvent&) override;
+    void mouseWheelMove  (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
 
     // Set flash intensity [0-1] — called by the parent track's timer
     void setFlash (float amount);
@@ -45,12 +46,57 @@ private:
     bool  hovering    = false;
     float flashAmount = 0.0f;
 
-    juce::TextButton noteUpBtn { "+" };
-    juce::TextButton noteDnBtn { "-" };
-
     void changeNote (int delta);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BeatPadComponent)
+};
+
+//==============================================================================
+// Scrollable label — responds to mouse wheel to change a value
+class ScrollableNoteLabel : public juce::Component
+{
+public:
+    ScrollableNoteLabel();
+
+    void paint (juce::Graphics& g) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+
+    std::function<void(int delta)> onNoteChange;
+
+    void setNoteName (const juce::String& name);
+
+private:
+    juce::String currentNote;
+    bool hovering = false;
+    void mouseEnter (const juce::MouseEvent&) override { hovering = true;  repaint(); }
+    void mouseExit  (const juce::MouseEvent&) override { hovering = false; repaint(); }
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScrollableNoteLabel)
+};
+
+//==============================================================================
+// Scrollable sound type selector
+class ScrollableSoundLabel : public juce::Component
+{
+public:
+    ScrollableSoundLabel();
+
+    void paint (juce::Graphics& g) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+
+    std::function<void(int delta)> onSoundChange;
+
+    void setSoundName (const juce::String& name);
+
+private:
+    juce::String currentSound;
+    bool hovering = false;
+    void mouseEnter (const juce::MouseEvent&) override { hovering = true;  repaint(); }
+    void mouseExit  (const juce::MouseEvent&) override { hovering = false; repaint(); }
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (ScrollableSoundLabel)
 };
 
 //==============================================================================
@@ -78,11 +124,13 @@ private:
     juce::TextButton decBtn { "-" };
     juce::TextButton incBtn { "+" };
 
-    // Note selector
-    juce::Label      noteLabel;
-    juce::Label      noteValueLabel;
-    juce::TextButton noteDnBtn { "<" };
-    juce::TextButton noteUpBtn { ">" };
+    // Note selector (scroll wheel)
+    juce::Label          noteLabel;
+    ScrollableNoteLabel  noteScroller;
+
+    // Sound type selector (scroll wheel)
+    juce::Label          soundLabel;
+    ScrollableSoundLabel soundScroller;
 
     // Gate slider
     juce::Label  gateLabel;
@@ -100,6 +148,8 @@ private:
     void updateBeatCountLabel();
     void changeNote (int delta);
     void updateNoteLabel();
+    void changeSoundType (int delta);
+    void updateSoundLabel();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RhythmTrackComponent)
 };
