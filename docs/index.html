@@ -111,46 +111,58 @@
 
   .bpm-display {
     display: flex;
-    align-items: baseline;
-    gap: 4px;
+    align-items: center;
+    gap: 6px;
   }
   .bpm-display .label {
     font-size: 9px;
     color: var(--text-dim);
     text-transform: uppercase;
   }
-  .bpm-display .value {
-    font-size: 32px;
-    font-weight: 700;
-    color: var(--accent);
-    min-width: 72px;
-  }
   .bpm-display .unit {
     font-size: 10px;
     color: var(--text-dim);
   }
-
-  .bpm-controls {
+  .bpm-scroll {
     display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .bpm-btn {
-    font-family: inherit;
-    font-size: 14px;
-    font-weight: 700;
-    width: 28px;
-    height: 28px;
-    background: var(--beat-bg);
-    color: var(--text);
-    border: none;
-    border-radius: 2px;
-    cursor: pointer;
-    display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    width: 80px;
+    height: 48px;
+    background: var(--beat-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: ns-resize;
+    position: relative;
+    touch-action: none;
+    transition: border-color 0.15s, background 0.15s;
   }
-  .bpm-btn:hover { background: var(--beat-hover); }
+  .bpm-scroll:hover {
+    background: var(--beat-hover);
+    border-color: var(--accent);
+  }
+  .bpm-scroll .bpm-val {
+    font-size: 28px;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1;
+    pointer-events: none;
+  }
+  .bpm-scroll .scroll-hint {
+    font-size: 7px;
+    color: var(--text-dim);
+    opacity: 0.4;
+    pointer-events: none;
+    line-height: 1;
+    position: absolute;
+  }
+  .bpm-scroll .scroll-hint-top { top: 2px; }
+  .bpm-scroll .scroll-hint-bot { bottom: 2px; }
+
+  .bpm-controls {
+    display: none; /* replaced by scroll */
+  }
 
   .slider-group {
     display: flex;
@@ -358,6 +370,70 @@
   .scroll-selector .scroll-hint-top { position: absolute; top: 2px; }
   .scroll-selector .scroll-hint-bot { position: absolute; bottom: 2px; }
 
+  /* Sound menu (dropdown-style) */
+  .sound-menu {
+    position: relative;
+    display: inline-block;
+  }
+  .sound-menu-btn {
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    min-width: 70px;
+    height: 28px;
+    background: var(--beat-bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .sound-menu-btn:hover {
+    background: var(--beat-hover);
+    border-color: var(--accent);
+  }
+  .sound-menu-btn .chevron {
+    font-size: 8px;
+    color: var(--text-dim);
+  }
+  .sound-menu-dropdown {
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    left: 0;
+    margin-bottom: 4px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    min-width: 100%;
+    z-index: 100;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.5);
+  }
+  .sound-menu.open .sound-menu-dropdown { display: block; }
+  .sound-menu-item {
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 8px 12px;
+    cursor: pointer;
+    color: var(--text-dim);
+    white-space: nowrap;
+    transition: background 0.1s, color 0.1s;
+  }
+  .sound-menu-item:hover {
+    background: var(--beat-hover);
+    color: var(--text);
+  }
+  .sound-menu-item.selected {
+    color: var(--accent);
+    background: var(--panel-dark);
+  }
+
   .gate-slider {
     -webkit-appearance: none;
     appearance: none;
@@ -441,28 +517,12 @@
     pointer-events: none;
   }
 
-  /* Note controls on pad */
-  .pad-note-btn {
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 700;
-    width: 85%;
-    height: 20px;
-    background: var(--panel-dark);
-    color: var(--accent);
-    border: none;
-    border-radius: 2px;
-    cursor: pointer;
-    z-index: 1;
-  }
-  .pad-note-btn:hover { background: var(--border); }
-
   .pad-note-name {
-    font-size: 12px;
+    font-size: 16px;
     font-weight: 700;
     color: var(--text-dim);
     z-index: 1;
-    margin: 4px 0;
+    margin: 6px 0;
   }
   .beat-pad.active .pad-note-name { color: var(--text-accent); }
 
@@ -503,6 +563,47 @@
     opacity: 0.5;
     z-index: 1;
     margin: 6px 0 -2px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .pad-cutoff {
+    width: 85%;
+    z-index: 1;
+    margin: 2px 0 0 0;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    touch-action: none;
+  }
+  .pad-cutoff::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 8px;
+    height: 8px;
+    background: #5588CC;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .pad-cutoff::-moz-range-thumb {
+    width: 8px;
+    height: 8px;
+    background: #5588CC;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .beat-pad.active .pad-cutoff::-webkit-slider-thumb { background: #66AAFF; }
+  .beat-pad.active .pad-cutoff::-moz-range-thumb { background: #66AAFF; }
+
+  .pad-cutoff-label {
+    font-size: 7px;
+    color: var(--text-dim);
+    opacity: 0.5;
+    z-index: 1;
+    margin: 4px 0 -2px 0;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
@@ -671,16 +772,9 @@
       padding: 6px 2px;
     }
 
-    /* Bigger pad controls for touch */
-    .pad-note-btn {
-      width: 90%;
-      height: 32px;
-      font-size: 16px;
-      min-height: 32px;
-    }
     .pad-note-name {
-      font-size: 14px;
-      margin: 6px 0;
+      font-size: 18px;
+      margin: 8px 0;
     }
     .pad-gate {
       margin: 12px 0 0 0;
@@ -761,15 +855,13 @@
 <!-- Controls Bar -->
 <div class="controls-bar">
   <div class="bpm-display">
-    <div>
-      <div class="label">CLOCK</div>
-      <div class="value" id="bpmValue">120</div>
+    <div class="label">CLOCK</div>
+    <div class="bpm-scroll" id="bpmScroll">
+      <span class="scroll-hint scroll-hint-top">▲</span>
+      <span class="bpm-val" id="bpmValue">120</span>
+      <span class="scroll-hint scroll-hint-bot">▼</span>
     </div>
     <div class="unit">BPM</div>
-  </div>
-  <div class="bpm-controls">
-    <button class="bpm-btn" id="bpmDec">−</button>
-    <button class="bpm-btn" id="bpmInc">+</button>
   </div>
 
   <span class="spacer" style="flex:1"></span>
@@ -812,10 +904,12 @@
       </div>
       <div class="control-row">
         <span class="ctrl-label">SOUND</span>
-        <div class="scroll-selector" id="trackA-soundScroll" data-track="A" data-param="sound">
-          <span class="scroll-hint scroll-hint-top">▲</span>
-          <span class="scroll-value" id="trackA-sound">SINE</span>
-          <span class="scroll-hint scroll-hint-bot">▼</span>
+        <div class="sound-menu" id="trackA-soundMenu" data-track="A">
+          <button class="sound-menu-btn">
+            <span id="trackA-sound">SINE</span>
+            <span class="chevron">&#9662;</span>
+          </button>
+          <div class="sound-menu-dropdown"></div>
         </div>
       </div>
       <div class="control-row">
@@ -852,10 +946,12 @@
       </div>
       <div class="control-row">
         <span class="ctrl-label">SOUND</span>
-        <div class="scroll-selector" id="trackB-soundScroll" data-track="B" data-param="sound">
-          <span class="scroll-hint scroll-hint-top">▲</span>
-          <span class="scroll-value" id="trackB-sound">TRI</span>
-          <span class="scroll-hint scroll-hint-bot">▼</span>
+        <div class="sound-menu" id="trackB-soundMenu" data-track="B">
+          <button class="sound-menu-btn">
+            <span id="trackB-sound">TRI</span>
+            <span class="chevron">&#9662;</span>
+          </button>
+          <div class="sound-menu-dropdown"></div>
         </div>
       </div>
       <div class="control-row">
@@ -911,6 +1007,7 @@ const state = {
       velocity: 0.8,
       note: 36,    // C2
       gate: 0.5,   // per-beat gate
+      cutoff: 1.0, // low-pass filter cutoff 0-1 (1 = wide open)
     })),
   },
   trackB: {
@@ -923,6 +1020,7 @@ const state = {
       velocity: 0.8,
       note: 38,    // D2
       gate: 0.5,
+      cutoff: 1.0,
     })),
   },
 };
@@ -1115,10 +1213,10 @@ function scheduleTrack(track, isTrackA, barLengthPpq, fromPpq, toPpq, audioNow, 
         // Gate duration in seconds (per-beat gate)
         const gateDuration = beatData.gate * (beatInterval / ppqPerSecond);
 
-        // Audio preview: convert MIDI note to frequency, use track sound type
+        // Audio preview: convert MIDI note to frequency, use track sound type + cutoff
         if (state.audioEnabled) {
           const freq = 440 * Math.pow(2, (note - 69) / 12);
-          scheduleVoiceAt(beatAudioTime, freq, beatData.velocity, track.soundType, gateDuration);
+          scheduleVoiceAt(beatAudioTime, freq, beatData.velocity, track.soundType, gateDuration, beatData.cutoff);
         }
 
         // MIDI output
@@ -1139,16 +1237,23 @@ function scheduleTrack(track, isTrackA, barLengthPpq, fromPpq, toPpq, audioNow, 
   }
 }
 
-function scheduleVoiceAt(when, frequency, velocity, soundType, duration = 0.12) {
+function scheduleVoiceAt(when, frequency, velocity, soundType, duration = 0.12, cutoff = 1.0) {
   const ctx = ensureAudioCtx();
   const safeWhen = Math.max(when, ctx.currentTime);
   const gain = ctx.createGain();
+
+  // Low-pass filter: cutoff 0-1 maps to 200 Hz – 20000 Hz (exponential)
+  const filter = ctx.createBiquadFilter();
+  filter.type = 'lowpass';
+  const minFreq = 200, maxFreq = 20000;
+  filter.frequency.value = minFreq * Math.pow(maxFreq / minFreq, cutoff);
+  filter.Q.value = 1.0;
+  filter.connect(gain);
   gain.connect(ctx.destination);
 
   const typeName = SOUND_TYPES[soundType] || 'SINE';
 
   if (typeName === 'NOISE') {
-    // White noise burst
     const dur = Math.max(0.01, Math.min(duration * 0.3, 0.08));
     const bufLen = Math.ceil(ctx.sampleRate * (dur + 0.02));
     const noiseBuf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
@@ -1158,21 +1263,20 @@ function scheduleVoiceAt(when, frequency, velocity, soundType, duration = 0.12) 
     src.buffer = noiseBuf;
     gain.gain.setValueAtTime(velocity * 0.25, safeWhen);
     gain.gain.exponentialRampToValueAtTime(0.001, safeWhen + dur);
-    src.connect(gain);
+    src.connect(filter);
     src.start(safeWhen);
     src.stop(safeWhen + dur + 0.01);
     return;
   }
 
   if (typeName === 'CLICK') {
-    // Short pitched click (~4ms)
     const dur = 0.015;
     const osc = ctx.createOscillator();
     osc.type = 'sine';
     osc.frequency.value = frequency;
     gain.gain.setValueAtTime(velocity * 0.4, safeWhen);
     gain.gain.exponentialRampToValueAtTime(0.001, safeWhen + dur);
-    osc.connect(gain);
+    osc.connect(filter);
     osc.start(safeWhen);
     osc.stop(safeWhen + dur + 0.01);
     return;
@@ -1188,7 +1292,7 @@ function scheduleVoiceAt(when, frequency, velocity, soundType, duration = 0.12) 
   gain.gain.setValueAtTime(velocity * 0.25, safeWhen);
   gain.gain.exponentialRampToValueAtTime(0.001, safeWhen + dur);
 
-  osc.connect(gain);
+  osc.connect(filter);
   osc.start(safeWhen);
   osc.stop(safeWhen + dur + 0.01);
 }
@@ -1256,34 +1360,20 @@ function createBeatPads(trackId) {
       <div class="active-bar"></div>
       <div class="flash-overlay"></div>
       <div class="flash-edge"></div>
-      <button class="pad-note-btn" data-action="note-up">+</button>
       <span class="pad-note-name">${midiNoteName(track.beats[i].note)}</span>
-      <button class="pad-note-btn" data-action="note-down">−</button>
       <span class="pad-gate-label">gate</span>
       <input type="range" class="pad-gate" min="1" max="99" value="${Math.round(track.beats[i].gate * 100)}" title="Gate">
+      <span class="pad-cutoff-label">lpf</span>
+      <input type="range" class="pad-cutoff" min="0" max="100" value="${Math.round(track.beats[i].cutoff * 100)}" title="Low-pass cutoff">
       <span class="pad-index">${String(i + 1).padStart(2, '0')}</span>
     `;
 
-    // Toggle active on pad click (but not on buttons or sliders)
+    // Toggle active on pad click (but not on sliders)
     pad.addEventListener('click', (e) => {
-      if (e.target.classList.contains('pad-note-btn')) return;
       if (e.target.classList.contains('pad-gate')) return;
+      if (e.target.classList.contains('pad-cutoff')) return;
       track.beats[i].active = !track.beats[i].active;
       pad.classList.toggle('active');
-    });
-
-    // Note buttons
-    pad.querySelector('[data-action="note-up"]').addEventListener('click', (e) => {
-      e.stopPropagation();
-      track.beats[i].note = Math.min(127, track.beats[i].note + 1);
-      pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
-      updateTrackNoteDisplay(trackId);
-    });
-    pad.querySelector('[data-action="note-down"]').addEventListener('click', (e) => {
-      e.stopPropagation();
-      track.beats[i].note = Math.max(0, track.beats[i].note - 1);
-      pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
-      updateTrackNoteDisplay(trackId);
     });
 
     // Scroll wheel on pad changes per-beat note
@@ -1304,6 +1394,16 @@ function createBeatPads(trackId) {
     gateInput.addEventListener('click', (e) => e.stopPropagation());
     gateInput.addEventListener('mousedown', (e) => e.stopPropagation());
     gateInput.addEventListener('touchstart', (e) => e.stopPropagation());
+
+    // Per-beat cutoff slider
+    const cutoffInput = pad.querySelector('.pad-cutoff');
+    cutoffInput.addEventListener('input', (e) => {
+      e.stopPropagation();
+      track.beats[i].cutoff = e.target.value / 100;
+    });
+    cutoffInput.addEventListener('click', (e) => e.stopPropagation());
+    cutoffInput.addEventListener('mousedown', (e) => e.stopPropagation());
+    cutoffInput.addEventListener('touchstart', (e) => e.stopPropagation());
 
     container.appendChild(pad);
   }
@@ -1353,13 +1453,31 @@ function init() {
   document.getElementById('resetBtn').addEventListener('click', resetPlayback);
   document.getElementById('tapBtn').addEventListener('click', handleTap);
 
-  // BPM
-  document.getElementById('bpmDec').addEventListener('click', () => {
-    state.bpm = Math.max(20, state.bpm - 1);
+  // BPM scroll selector
+  const bpmScroll = document.getElementById('bpmScroll');
+  bpmScroll.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 1 : -1;
+    state.bpm = Math.max(20, Math.min(300, state.bpm + delta));
     updateBpmDisplay();
-  });
-  document.getElementById('bpmInc').addEventListener('click', () => {
-    state.bpm = Math.min(300, state.bpm + 1);
+  }, { passive: false });
+  {
+    let touchY = null, acc = 0;
+    bpmScroll.addEventListener('touchstart', (e) => { touchY = e.touches[0].clientY; acc = 0; e.preventDefault(); }, { passive: false });
+    bpmScroll.addEventListener('touchmove', (e) => {
+      if (touchY === null) return;
+      e.preventDefault();
+      const dy = touchY - e.touches[0].clientY;
+      acc += dy; touchY = e.touches[0].clientY;
+      while (acc >= 15) { state.bpm = Math.min(300, state.bpm + 1); acc -= 15; updateBpmDisplay(); }
+      while (acc <= -15) { state.bpm = Math.max(20, state.bpm - 1); acc += 15; updateBpmDisplay(); }
+    }, { passive: false });
+    bpmScroll.addEventListener('touchend', () => { touchY = null; });
+  }
+  bpmScroll.addEventListener('click', (e) => {
+    const rect = bpmScroll.getBoundingClientRect();
+    const delta = (e.clientY - rect.top) < rect.height / 2 ? 1 : -1;
+    state.bpm = Math.max(20, Math.min(300, state.bpm + delta));
     updateBpmDisplay();
   });
 
@@ -1403,70 +1521,78 @@ function init() {
     });
   });
 
-  // ── Scroll Selectors (note + sound) ──────────────────────
-  function initScrollSelector(el) {
+  // ── Note Scroll Selectors ──────────────────────────────────
+  document.querySelectorAll('.scroll-selector').forEach(el => {
     const trackId = el.dataset.track;
-    const param = el.dataset.param;
 
-    // Scroll wheel handler
     el.addEventListener('wheel', (e) => {
       e.preventDefault();
       const delta = e.deltaY < 0 ? 1 : -1;
-      applyScrollDelta(trackId, param, delta);
+      shiftTrackNotes(trackId, delta);
     }, { passive: false });
 
-    // Touch swipe handler
-    let touchStartY = null;
-    let accumulated = 0;
-    const SWIPE_THRESHOLD = 20; // px per step
-
-    el.addEventListener('touchstart', (e) => {
-      touchStartY = e.touches[0].clientY;
-      accumulated = 0;
-      e.preventDefault();
-    }, { passive: false });
-
+    let touchStartY = null, accumulated = 0;
+    el.addEventListener('touchstart', (e) => { touchStartY = e.touches[0].clientY; accumulated = 0; e.preventDefault(); }, { passive: false });
     el.addEventListener('touchmove', (e) => {
       if (touchStartY === null) return;
       e.preventDefault();
       const dy = touchStartY - e.touches[0].clientY;
-      accumulated += dy;
-      touchStartY = e.touches[0].clientY;
-
-      while (accumulated >= SWIPE_THRESHOLD) {
-        applyScrollDelta(trackId, param, 1);
-        accumulated -= SWIPE_THRESHOLD;
-      }
-      while (accumulated <= -SWIPE_THRESHOLD) {
-        applyScrollDelta(trackId, param, -1);
-        accumulated += SWIPE_THRESHOLD;
-      }
+      accumulated += dy; touchStartY = e.touches[0].clientY;
+      while (accumulated >= 20) { shiftTrackNotes(trackId, 1); accumulated -= 20; }
+      while (accumulated <= -20) { shiftTrackNotes(trackId, -1); accumulated += 20; }
     }, { passive: false });
-
     el.addEventListener('touchend', () => { touchStartY = null; });
 
-    // Click: top half = up, bottom half = down
     el.addEventListener('click', (e) => {
       const rect = el.getBoundingClientRect();
-      const delta = (e.clientY - rect.top) < rect.height / 2 ? 1 : -1;
-      applyScrollDelta(trackId, param, delta);
+      shiftTrackNotes(trackId, (e.clientY - rect.top) < rect.height / 2 ? 1 : -1);
     });
-  }
+  });
 
-  function applyScrollDelta(trackId, param, delta) {
+  function shiftTrackNotes(trackId, delta) {
     const track = trackId === 'A' ? state.trackA : state.trackB;
-
-    if (param === 'note') {
-      track.beats.forEach(b => b.note = Math.max(0, Math.min(127, b.note + delta)));
-      updateTrackNoteDisplay(trackId);
-      updateAllPadNoteNames(trackId);
-    } else if (param === 'sound') {
-      track.soundType = (track.soundType + delta + SOUND_TYPES.length) % SOUND_TYPES.length;
-      updateTrackSoundDisplay(trackId);
-    }
+    track.beats.forEach(b => b.note = Math.max(0, Math.min(127, b.note + delta)));
+    updateTrackNoteDisplay(trackId);
+    updateAllPadNoteNames(trackId);
   }
 
-  document.querySelectorAll('.scroll-selector').forEach(initScrollSelector);
+  // ── Sound Menus ───────────────────────────────────────────
+  document.querySelectorAll('.sound-menu').forEach(menu => {
+    const trackId = menu.dataset.track;
+    const track = trackId === 'A' ? state.trackA : state.trackB;
+    const btn = menu.querySelector('.sound-menu-btn');
+    const dropdown = menu.querySelector('.sound-menu-dropdown');
+
+    // Populate items
+    SOUND_TYPES.forEach((name, idx) => {
+      const item = document.createElement('div');
+      item.className = 'sound-menu-item' + (idx === track.soundType ? ' selected' : '');
+      item.textContent = name;
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        track.soundType = idx;
+        updateTrackSoundDisplay(trackId);
+        dropdown.querySelectorAll('.sound-menu-item').forEach((it, j) =>
+          it.classList.toggle('selected', j === idx));
+        menu.classList.remove('open');
+      });
+      dropdown.appendChild(item);
+    });
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // Close other menus
+      document.querySelectorAll('.sound-menu.open').forEach(m => {
+        if (m !== menu) m.classList.remove('open');
+      });
+      menu.classList.toggle('open');
+    });
+  });
+
+  // Close menus when clicking outside
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.sound-menu.open').forEach(m => m.classList.remove('open'));
+  });
 
   // Track-level gate sliders — sets all beats on that track
   document.getElementById('trackA-gate').addEventListener('input', (e) => {
@@ -1539,6 +1665,16 @@ function updateAllPadGates(trackId) {
   for (let i = 0; i < MAX_BEATS; i++) {
     const slider = pads[i]?.querySelector('.pad-gate');
     if (slider) slider.value = Math.round(track.beats[i].gate * 100);
+  }
+}
+
+function updateAllPadCutoffs(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  const container = document.getElementById(`track${trackId}-pads`);
+  const pads = container.children;
+  for (let i = 0; i < MAX_BEATS; i++) {
+    const slider = pads[i]?.querySelector('.pad-cutoff');
+    if (slider) slider.value = Math.round((track.beats[i].cutoff ?? 1.0) * 100);
   }
 }
 

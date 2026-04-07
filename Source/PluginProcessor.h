@@ -75,6 +75,8 @@ public:
     std::array<std::atomic<float>, MAX_BEATS> trackBVelocity;
     std::array<std::atomic<int>,   MAX_BEATS> trackANotes;   // per-beat MIDI note
     std::array<std::atomic<int>,   MAX_BEATS> trackBNotes;
+    std::array<std::atomic<float>, MAX_BEATS> trackACutoff;  // per-beat LP cutoff 0-1
+    std::array<std::atomic<float>, MAX_BEATS> trackBCutoff;
 
     // Per-track preview sound type
     std::atomic<int> trackASoundType { (int)SoundType::Sine };
@@ -146,11 +148,14 @@ private:
         bool      active     = false;
         SoundType type       = SoundType::Sine;
         int       clickCount = 0;     // samples remaining for click type
+        // Simple one-pole low-pass filter state
+        float     lpCutoff   = 1.0f;  // 0-1
+        float     lpState    = 0.0f;
     };
     static constexpr int NUM_VOICES = 16;
     std::array<SynthVoice, NUM_VOICES> voices {};
 
-    void triggerVoice (double frequency, SoundType type);
+    void triggerVoice (double frequency, SoundType type, float cutoff);
     void renderVoices (juce::AudioBuffer<float>& buffer);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PolyrhythmProcessor)
