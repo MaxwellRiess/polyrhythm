@@ -172,6 +172,7 @@
     background: var(--border);
     border-radius: 2px;
     outline: none;
+    touch-action: none;
   }
   .slider-group input[type="range"]::-webkit-slider-thumb {
     -webkit-appearance: none;
@@ -328,6 +329,7 @@
     background: var(--border);
     border-radius: 2px;
     outline: none;
+    touch-action: none;
   }
   .gate-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
@@ -437,6 +439,7 @@
     background: var(--border);
     border-radius: 2px;
     outline: none;
+    touch-action: none;
   }
   .pad-gate::-webkit-slider-thumb {
     -webkit-appearance: none;
@@ -502,12 +505,185 @@
     color: var(--accent);
   }
 
-  /* ── Responsive ─────────────────────────────────────── */
-  @media (max-width: 700px) {
-    .tracks-container { flex-direction: column; }
-    .track-divider { width: auto; height: 2px; }
-    .bpm-display .value { font-size: 24px; }
-    .controls-bar { flex-wrap: wrap; gap: 10px; }
+  /* ── Responsive — Mobile ─────────────────────────────── */
+  @media (max-width: 768px) {
+    html, body {
+      overflow: auto;
+      height: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    body { min-height: 100vh; }
+
+    /* Header */
+    .header {
+      height: 40px;
+      padding: 0 10px;
+      gap: 8px;
+    }
+    .header .title { font-size: 11px; }
+    .header .mode-label { font-size: 9px; }
+
+    /* Transport — wrap into 2x2 grid */
+    .transport {
+      height: auto;
+      padding: 8px;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .transport-btn {
+      padding: 10px 16px;
+      font-size: 12px;
+      min-height: 44px;
+      flex: 1 1 calc(50% - 6px);
+      justify-content: center;
+    }
+
+    /* Controls bar — stack vertically */
+    .controls-bar {
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 10px 12px;
+    }
+    .bpm-display { flex: 0 0 auto; }
+    .bpm-display .value { font-size: 26px; min-width: 60px; }
+    .bpm-controls { gap: 6px; }
+    .bpm-btn {
+      width: 40px;
+      height: 40px;
+      font-size: 18px;
+    }
+    .slider-group {
+      flex: 1 1 calc(50% - 60px);
+      min-width: 120px;
+    }
+    .slider-group input[type="range"] { width: 100%; flex: 1; }
+    .slider-group input[type="range"]::-webkit-slider-thumb {
+      width: 22px;
+      height: 22px;
+    }
+    .slider-group input[type="range"]::-moz-range-thumb {
+      width: 22px;
+      height: 22px;
+    }
+    .slider-group .slider-label {
+      min-width: 32px;
+      font-size: 9px;
+    }
+
+    /* Tracks — stack vertically */
+    .tracks-container {
+      flex-direction: column;
+      overflow: visible;
+      gap: 2px;
+      padding: 4px;
+    }
+    .track-divider {
+      width: auto;
+      height: 2px;
+    }
+    .track-panel {
+      overflow: visible;
+      min-height: auto;
+    }
+
+    /* Track controls — bigger touch targets */
+    .track-controls {
+      padding: 8px 10px;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .ctrl-btn {
+      width: 40px;
+      height: 40px;
+      font-size: 16px;
+    }
+    .ctrl-btn.reset-btn {
+      width: 40px;
+      height: 40px;
+      font-size: 14px;
+    }
+    .ctrl-value { font-size: 16px; min-width: 28px; }
+    .ctrl-label { font-size: 11px; }
+    .gate-slider {
+      width: 100%;
+      flex: 1;
+      height: 6px;
+    }
+    .gate-slider::-webkit-slider-thumb {
+      width: 22px;
+      height: 22px;
+    }
+
+    /* Beat pad grid — wrap into rows */
+    .pad-grid {
+      flex-wrap: wrap;
+      padding: 6px;
+      gap: 6px;
+      min-height: auto;
+    }
+    .beat-pad {
+      flex: 1 1 calc(25% - 6px);
+      min-width: 60px;
+      max-width: calc(50% - 6px);
+      min-height: 130px;
+      padding: 6px 2px;
+    }
+
+    /* Bigger pad controls for touch */
+    .pad-note-btn {
+      width: 90%;
+      height: 32px;
+      font-size: 16px;
+      min-height: 32px;
+    }
+    .pad-note-name {
+      font-size: 14px;
+      margin: 6px 0;
+    }
+    .pad-gate {
+      margin: 12px 0 0 0;
+      height: 6px;
+    }
+    .pad-gate::-webkit-slider-thumb {
+      width: 18px;
+      height: 18px;
+    }
+    .pad-gate::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+    }
+    .pad-gate-label { font-size: 8px; margin: 8px 0 -1px 0; }
+    .pad-index { font-size: 8px; bottom: 2px; }
+
+    /* Footer */
+    .footer {
+      height: auto;
+      padding: 8px 10px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .footer-label {
+      font-size: 10px;
+      padding: 8px 12px;
+      min-height: 36px;
+      display: flex;
+      align-items: center;
+    }
+  }
+
+  /* Small phones */
+  @media (max-width: 400px) {
+    .beat-pad {
+      flex: 1 1 calc(50% - 6px);
+      min-width: 50px;
+      min-height: 120px;
+    }
+    .transport-btn {
+      padding: 8px 10px;
+      font-size: 11px;
+    }
+    .bpm-display .value { font-size: 22px; }
+    .bpm-btn { width: 36px; height: 36px; }
   }
 </style>
 </head>
@@ -1030,6 +1206,7 @@ function createBeatPads(trackId) {
     });
     gateInput.addEventListener('click', (e) => e.stopPropagation());
     gateInput.addEventListener('mousedown', (e) => e.stopPropagation());
+    gateInput.addEventListener('touchstart', (e) => e.stopPropagation());
 
     container.appendChild(pad);
   }
