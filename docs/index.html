@@ -493,7 +493,7 @@
     pointer-events: none;
   }
   .beat-pad.active .active-bar {
-    height: 30%;
+    height: 6px;
   }
 
   /* Flash overlay */
@@ -517,12 +517,42 @@
     pointer-events: none;
   }
 
+  /* Note controls on pad */
+  .pad-note-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    z-index: 1;
+    margin: 4px 0;
+    width: 90%;
+    justify-content: center;
+  }
+  .pad-note-btn {
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    width: 24px;
+    height: 24px;
+    background: var(--panel-dark);
+    color: var(--accent);
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .pad-note-btn:hover { background: var(--border); }
+
   .pad-note-name {
     font-size: 16px;
     font-weight: 700;
     color: var(--text-dim);
     z-index: 1;
-    margin: 6px 0;
+    text-align: center;
+    flex: 1;
+    min-width: 0;
   }
   .beat-pad.active .pad-note-name { color: var(--text-accent); }
 
@@ -772,9 +802,16 @@
       padding: 6px 2px;
     }
 
+    .pad-note-btn {
+      width: 32px;
+      height: 32px;
+      font-size: 18px;
+    }
     .pad-note-name {
       font-size: 18px;
-      margin: 8px 0;
+    }
+    .pad-note-row {
+      margin: 6px 0;
     }
     .pad-gate {
       margin: 12px 0 0 0;
@@ -914,7 +951,7 @@
       </div>
       <div class="control-row">
         <span class="ctrl-label">GATE</span>
-        <input type="range" class="gate-slider" id="trackA-gate" min="1" max="99" value="50">
+        <input type="range" class="gate-slider" id="trackA-gate" min="1" max="100" value="50">
       </div>
     </div>
     <div class="pad-grid" id="trackA-pads"></div>
@@ -956,7 +993,7 @@
       </div>
       <div class="control-row">
         <span class="ctrl-label">GATE</span>
-        <input type="range" class="gate-slider" id="trackB-gate" min="1" max="99" value="50">
+        <input type="range" class="gate-slider" id="trackB-gate" min="1" max="100" value="50">
       </div>
     </div>
     <div class="pad-grid" id="trackB-pads"></div>
@@ -1289,7 +1326,10 @@ function scheduleVoiceAt(when, frequency, velocity, soundType, duration = 0.12, 
   osc.frequency.value = frequency;
 
   const dur = Math.max(0.02, Math.min(duration, 2.0));
+  const releaseTime = 0.02; // 20ms release to avoid click
+  // Hold at full volume, then quick release at the end
   gain.gain.setValueAtTime(velocity * 0.25, safeWhen);
+  gain.gain.setValueAtTime(velocity * 0.25, safeWhen + dur - releaseTime);
   gain.gain.exponentialRampToValueAtTime(0.001, safeWhen + dur);
 
   osc.connect(filter);
@@ -1360,20 +1400,39 @@ function createBeatPads(trackId) {
       <div class="active-bar"></div>
       <div class="flash-overlay"></div>
       <div class="flash-edge"></div>
-      <span class="pad-note-name">${midiNoteName(track.beats[i].note)}</span>
+      <div class="pad-note-row">
+        <button class="pad-note-btn" data-action="note-down">&minus;</button>
+        <span class="pad-note-name">${midiNoteName(track.beats[i].note)}</span>
+        <button class="pad-note-btn" data-action="note-up">+</button>
+      </div>
       <span class="pad-gate-label">gate</span>
-      <input type="range" class="pad-gate" min="1" max="99" value="${Math.round(track.beats[i].gate * 100)}" title="Gate">
+      <input type="range" class="pad-gate" min="1" max="100" value="${Math.round(track.beats[i].gate * 100)}" title="Gate">
       <span class="pad-cutoff-label">lpf</span>
       <input type="range" class="pad-cutoff" min="0" max="100" value="${Math.round(track.beats[i].cutoff * 100)}" title="Low-pass cutoff">
       <span class="pad-index">${String(i + 1).padStart(2, '0')}</span>
     `;
 
-    // Toggle active on pad click (but not on sliders)
+    // Toggle active on pad click (but not on buttons or sliders)
     pad.addEventListener('click', (e) => {
+      if (e.target.classList.contains('pad-note-btn')) return;
       if (e.target.classList.contains('pad-gate')) return;
       if (e.target.classList.contains('pad-cutoff')) return;
       track.beats[i].active = !track.beats[i].active;
       pad.classList.toggle('active');
+    });
+
+    // Note buttons
+    pad.querySelector('[data-action="note-up"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      track.beats[i].note = Math.min(127, track.beats[i].note + 1);
+      pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
+      updateTrackNoteDisplay(trackId);
+    });
+    pad.querySelector('[data-action="note-down"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      track.beats[i].note = Math.max(0, track.beats[i].note - 1);
+      pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
+      updateTrackNoteDisplay(trackId);
     });
 
     // Scroll wheel on pad changes per-beat note

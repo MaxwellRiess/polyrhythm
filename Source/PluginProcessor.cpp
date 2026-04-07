@@ -34,8 +34,8 @@ PolyrhythmProcessor::createParameterLayout()
     params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackB_channel", "Track B MIDI Channel",   1,  16,  1));
     // Per-beat notes are stored in the beat state ValueTree, not as automatable params
     params.push_back (std::make_unique<juce::AudioParameterFloat>("swing",          "Swing",                  0.0f, 0.5f,  0.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("trackA_gate",    "Track A Gate",           0.01f, 0.99f, 0.5f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("trackB_gate",    "Track B Gate",           0.01f, 0.99f, 0.5f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("trackA_gate",    "Track A Gate",           0.01f, 1.0f, 0.5f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("trackB_gate",    "Track B Gate",           0.01f, 1.0f, 0.5f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>("probability",    "Probability",            0.0f,  1.0f,  1.0f));
 
     return { params.begin(), params.end() };

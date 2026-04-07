@@ -252,7 +252,7 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     // Gate slider
     gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     gateSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
-    gateSlider.setRange (0.01, 0.99, 0.01);
+    gateSlider.setRange (0.01, 1.0, 0.01);
     gateSlider.setColour (juce::Slider::trackColourId,      Theme::Accent);
     gateSlider.setColour (juce::Slider::backgroundColourId, Theme::Border);
     gateSlider.setColour (juce::Slider::thumbColourId,      Theme::Accent);
