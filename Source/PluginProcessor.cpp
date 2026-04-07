@@ -15,6 +15,8 @@ PolyrhythmProcessor::PolyrhythmProcessor()
         trackBVelocity[i] = 0.8f;
         trackANotes[i]    = 36;   // C2 default for track A
         trackBNotes[i]    = 38;   // D2 default for track B
+        trackACutoff[i]   = 1.0f; // LP filter wide open
+        trackBCutoff[i]   = 1.0f;
     }
 }
 
@@ -159,7 +161,7 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 }
 
 //==============================================================================
-void PolyrhythmProcessor::triggerVoice (double frequency, SoundType type)
+void PolyrhythmProcessor::triggerVoice (double frequency, SoundType type, float cutoff)
 {
     // Find a free voice, or steal the quietest one
     SynthVoice* target = nullptr;
@@ -177,6 +179,8 @@ void PolyrhythmProcessor::triggerVoice (double frequency, SoundType type)
         target->active     = true;
         target->type       = type;
         target->clickCount = (type == SoundType::Click) ? (int)(sampleRateVal * 0.004) : 0;
+        target->lpCutoff   = cutoff;
+        target->lpState    = 0.0f;
     }
 }
 
@@ -197,6 +201,12 @@ void PolyrhythmProcessor::renderVoices (juce::AudioBuffer<float>& buffer)
         const float decay = (v.type == SoundType::Click || v.type == SoundType::Noise)
                             ? decayShort : decayLong;
 
+        // One-pole low-pass: coefficient from cutoff (0-1 maps to 200-20000 Hz)
+        const float minF = 200.0f, maxF = 20000.0f;
+        const float lpFreq = minF * std::pow (maxF / minF, v.lpCutoff);
+        const float lpCoeff = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * lpFreq / (float)sampleRateVal);
+        float lpS = v.lpState;
+
         for (int s = 0; s < numSamples; ++s)
         {
             float sample = 0.0f;
@@ -209,7 +219,6 @@ void PolyrhythmProcessor::renderVoices (juce::AudioBuffer<float>& buffer)
                     break;
 
                 case SoundType::Triangle:
-                    // Triangle from phase: 2/pi * asin(sin(phase))
                     sample = (float)(2.0 / juce::MathConstants<double>::pi * std::asin (std::sin (phase)));
                     break;
 
@@ -218,7 +227,6 @@ void PolyrhythmProcessor::renderVoices (juce::AudioBuffer<float>& buffer)
                     break;
 
                 case SoundType::Saw:
-                    // Saw: phase / pi - 1, mapped to [-1, 1]
                     sample = (float)(std::fmod (phase, twoPi) / juce::MathConstants<double>::pi - 1.0);
                     break;
 
@@ -240,12 +248,18 @@ void PolyrhythmProcessor::renderVoices (juce::AudioBuffer<float>& buffer)
             }
 
             sample *= amp;
+
+            // Apply one-pole low-pass filter
+            lpS += lpCoeff * (sample - lpS);
+            sample = lpS;
+
             for (int ch = 0; ch < numChannels; ++ch)
                 buffer.getWritePointer (ch)[s] += sample;
 
             phase += v.inc;
             amp   *= decay;
         }
+        v.lpState = lpS;
 
         v.phase = std::fmod (phase, juce::MathConstants<double>::twoPi);
         v.amp   = amp;
@@ -317,12 +331,13 @@ void PolyrhythmProcessor::processTrack (bool isTrackA,
                     trackBFireCount.fetch_add (1, std::memory_order_relaxed);
                 }
 
-                // Audio preview using per-track sound type and actual note frequency
+                // Audio preview using per-track sound type, note frequency, and cutoff
                 {
+                    auto& cutoffArr = isTrackA ? trackACutoff : trackBCutoff;
                     const double freq = 440.0 * std::pow (2.0, (beatNote - 69) / 12.0);
                     const auto stype = (SoundType)(isTrackA ? trackASoundType.load()
                                                             : trackBSoundType.load());
-                    triggerVoice (freq, stype);
+                    triggerVoice (freq, stype, cutoffArr[beat].load());
                 }
 
                 // Note-off scheduling
@@ -354,9 +369,11 @@ void PolyrhythmProcessor::getStateInformation (juce::MemoryBlock& destData)
         beatTree.setProperty ("aActive" + juce::String ((int)i), trackAActive[i].load(),   nullptr);
         beatTree.setProperty ("aVel"    + juce::String ((int)i), trackAVelocity[i].load(), nullptr);
         beatTree.setProperty ("aNote"   + juce::String ((int)i), trackANotes[i].load(),    nullptr);
+        beatTree.setProperty ("aCutoff" + juce::String ((int)i), trackACutoff[i].load(),   nullptr);
         beatTree.setProperty ("bActive" + juce::String ((int)i), trackBActive[i].load(),   nullptr);
         beatTree.setProperty ("bVel"    + juce::String ((int)i), trackBVelocity[i].load(), nullptr);
         beatTree.setProperty ("bNote"   + juce::String ((int)i), trackBNotes[i].load(),    nullptr);
+        beatTree.setProperty ("bCutoff" + juce::String ((int)i), trackBCutoff[i].load(),   nullptr);
     }
     beatTree.setProperty ("aSoundType", trackASoundType.load(), nullptr);
     beatTree.setProperty ("bSoundType", trackBSoundType.load(), nullptr);
@@ -382,9 +399,11 @@ void PolyrhythmProcessor::setStateInformation (const void* data, int sizeInBytes
             trackAActive[i]   = (bool) beatTree.getProperty ("aActive" + juce::String ((int)i), i == 0);
             trackAVelocity[i] = (float)beatTree.getProperty ("aVel"    + juce::String ((int)i), 0.8f);
             trackANotes[i]    = (int)  beatTree.getProperty ("aNote"   + juce::String ((int)i), 36);
+            trackACutoff[i]   = (float)beatTree.getProperty ("aCutoff" + juce::String ((int)i), 1.0f);
             trackBActive[i]   = (bool) beatTree.getProperty ("bActive" + juce::String ((int)i), i == 0);
             trackBVelocity[i] = (float)beatTree.getProperty ("bVel"    + juce::String ((int)i), 0.8f);
             trackBNotes[i]    = (int)  beatTree.getProperty ("bNote"   + juce::String ((int)i), 38);
+            trackBCutoff[i]   = (float)beatTree.getProperty ("bCutoff" + juce::String ((int)i), 1.0f);
         }
         trackASoundType.store ((int)beatTree.getProperty ("aSoundType", (int)SoundType::Sine));
         trackBSoundType.store ((int)beatTree.getProperty ("bSoundType", (int)SoundType::Triangle));
