@@ -16,19 +16,6 @@ BeatPadComponent::BeatPadComponent (std::atomic<bool>& activeRef,
     : active (activeRef), velocity (velocityRef), note (noteRef), idx (index)
 {
     setRepaintsOnMouseActivity (true);
-
-    auto styleNoteBtn = [this] (juce::TextButton& btn)
-    {
-        btn.setColour (juce::TextButton::buttonColourId,  Theme::PanelDark);
-        btn.setColour (juce::TextButton::textColourOnId,  Theme::Accent);
-        btn.setColour (juce::TextButton::textColourOffId, Theme::Accent);
-        addAndMakeVisible (btn);
-    };
-    styleNoteBtn (noteUpBtn);
-    styleNoteBtn (noteDnBtn);
-
-    noteUpBtn.onClick = [this] { changeNote (+1); };
-    noteDnBtn.onClick = [this] { changeNote (-1); };
 }
 
 void BeatPadComponent::setFlash (float amount)
@@ -91,6 +78,13 @@ void BeatPadComponent::mouseDown (const juce::MouseEvent&)
 void BeatPadComponent::mouseEnter (const juce::MouseEvent&) { hovering = true;  repaint(); }
 void BeatPadComponent::mouseExit  (const juce::MouseEvent&) { hovering = false; repaint(); }
 
+void BeatPadComponent::mouseWheelMove (const juce::MouseEvent&,
+                                        const juce::MouseWheelDetails& wheel)
+{
+    const int delta = wheel.deltaY > 0 ? 1 : (wheel.deltaY < 0 ? -1 : 0);
+    if (delta != 0) changeNote (delta);
+}
+
 void BeatPadComponent::changeNote (int delta)
 {
     note.store (juce::jlimit (0, 127, note.load() + delta));
@@ -98,16 +92,110 @@ void BeatPadComponent::changeNote (int delta)
     repaint();
 }
 
-void BeatPadComponent::resized()
-{
-    const int w   = getWidth();
-    const int h   = getHeight();
-    const int btnH = juce::jlimit (16, 24, h / 5);
-    const int btnW = w - 6;
-    const int mid  = h / 2;
+void BeatPadComponent::resized() {}
 
-    noteUpBtn.setBounds (3, mid - btnH - 14, btnW, btnH);
-    noteDnBtn.setBounds (3, mid + 14,        btnW, btnH);
+//==============================================================================
+// ScrollableNoteLabel
+//==============================================================================
+ScrollableNoteLabel::ScrollableNoteLabel()
+{
+    setRepaintsOnMouseActivity (true);
+}
+
+void ScrollableNoteLabel::setNoteName (const juce::String& name)
+{
+    currentNote = name;
+    repaint();
+}
+
+void ScrollableNoteLabel::paint (juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+
+    // Subtle background
+    g.setColour (hovering ? Theme::BeatBgHover : Theme::BeatBg);
+    g.fillRoundedRectangle (bounds, 3.0f);
+
+    // Border
+    g.setColour (hovering ? Theme::Accent : Theme::Border);
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 3.0f, 1.0f);
+
+    // Note name
+    g.setFont (monoFont (13.0f, true));
+    g.setColour (Theme::TextAccent);
+    g.drawText (currentNote, bounds, juce::Justification::centred, false);
+
+    // Scroll hint arrows
+    g.setFont (monoFont (8.0f));
+    g.setColour (Theme::TextDim.withAlpha (0.5f));
+    g.drawText (juce::CharPointer_UTF8 ("\xe2\x96\xb2"), bounds.removeFromTop (10),
+                juce::Justification::centredTop, false);
+    g.drawText (juce::CharPointer_UTF8 ("\xe2\x96\xbc"), getLocalBounds().toFloat().removeFromBottom (10),
+                juce::Justification::centredBottom, false);
+}
+
+void ScrollableNoteLabel::mouseWheelMove (const juce::MouseEvent&,
+                                           const juce::MouseWheelDetails& wheel)
+{
+    const int delta = wheel.deltaY > 0 ? 1 : (wheel.deltaY < 0 ? -1 : 0);
+    if (delta != 0 && onNoteChange) onNoteChange (delta);
+}
+
+void ScrollableNoteLabel::mouseDown (const juce::MouseEvent& e)
+{
+    // Click top half = up, bottom half = down
+    const int delta = e.y < getHeight() / 2 ? 1 : -1;
+    if (onNoteChange) onNoteChange (delta);
+}
+
+//==============================================================================
+// ScrollableSoundLabel
+//==============================================================================
+ScrollableSoundLabel::ScrollableSoundLabel()
+{
+    setRepaintsOnMouseActivity (true);
+}
+
+void ScrollableSoundLabel::setSoundName (const juce::String& name)
+{
+    currentSound = name;
+    repaint();
+}
+
+void ScrollableSoundLabel::paint (juce::Graphics& g)
+{
+    auto bounds = getLocalBounds().toFloat();
+
+    g.setColour (hovering ? Theme::BeatBgHover : Theme::BeatBg);
+    g.fillRoundedRectangle (bounds, 3.0f);
+
+    g.setColour (hovering ? Theme::Accent : Theme::Border);
+    g.drawRoundedRectangle (bounds.reduced (0.5f), 3.0f, 1.0f);
+
+    g.setFont (monoFont (11.0f, true));
+    g.setColour (Theme::TextPrimary);
+    g.drawText (currentSound, bounds, juce::Justification::centred, false);
+
+    // Scroll hint arrows
+    g.setFont (monoFont (8.0f));
+    g.setColour (Theme::TextDim.withAlpha (0.5f));
+    g.drawText (juce::CharPointer_UTF8 ("\xe2\x96\xb2"), bounds.removeFromTop (10),
+                juce::Justification::centredTop, false);
+    g.drawText (juce::CharPointer_UTF8 ("\xe2\x96\xbc"), getLocalBounds().toFloat().removeFromBottom (10),
+                juce::Justification::centredBottom, false);
+}
+
+void ScrollableSoundLabel::mouseWheelMove (const juce::MouseEvent&,
+                                            const juce::MouseWheelDetails& wheel)
+{
+    const int delta = wheel.deltaY > 0 ? 1 : (wheel.deltaY < 0 ? -1 : 0);
+    if (delta != 0 && onSoundChange) onSoundChange (delta);
+}
+
+void ScrollableSoundLabel::mouseDown (const juce::MouseEvent& e)
+{
+    const int delta = e.y < getHeight() / 2 ? 1 : -1;
+    if (onSoundChange) onSoundChange (delta);
 }
 
 //==============================================================================
@@ -130,7 +218,7 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     makeLabel (beatsLabel,     "BEATS",                        10.0f, Theme::TextDim);
     makeLabel (beatCountLabel, "4",                            14.0f, Theme::TextPrimary, true);
     makeLabel (noteLabel,      "NOTE",                         10.0f, Theme::TextDim);
-    makeLabel (noteValueLabel, "C2",                           12.0f, Theme::TextAccent, true);
+    makeLabel (soundLabel,     "SOUND",                        10.0f, Theme::TextDim);
     makeLabel (gateLabel,      "GATE",                         10.0f, Theme::TextDim);
 
     // Channel badge
@@ -150,12 +238,16 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     };
 
     styleBtn (decBtn);    styleBtn (incBtn);
-    styleBtn (noteDnBtn); styleBtn (noteUpBtn);
-
     decBtn.onClick    = [this] { changeBeatCount (-1); };
     incBtn.onClick    = [this] { changeBeatCount (+1); };
-    noteDnBtn.onClick = [this] { changeNote (-1); };
-    noteUpBtn.onClick = [this] { changeNote (+1); };
+
+    // Scrollable note selector
+    noteScroller.onNoteChange = [this] (int delta) { changeNote (delta); };
+    addAndMakeVisible (noteScroller);
+
+    // Scrollable sound type selector
+    soundScroller.onSoundChange = [this] (int delta) { changeSoundType (delta); };
+    addAndMakeVisible (soundScroller);
 
     // Gate slider
     gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
@@ -183,6 +275,7 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
 
     updateBeatCountLabel();
     updateNoteLabel();
+    updateSoundLabel();
     refreshPads();
 
     // Initialise fire-count baseline so we don't flash on first load
@@ -260,11 +353,25 @@ void RhythmTrackComponent::updateBeatCountLabel()
 
 void RhythmTrackComponent::updateNoteLabel()
 {
-    // Show beat-0 note as the "reference" note for this track
     const int note = trackA ? processor.trackANotes[0].load()
                             : processor.trackBNotes[0].load();
-    noteValueLabel.setText (juce::MidiMessage::getMidiNoteName (note, true, true, 4),
-                            juce::dontSendNotification);
+    noteScroller.setNoteName (juce::MidiMessage::getMidiNoteName (note, true, true, 4));
+}
+
+void RhythmTrackComponent::changeSoundType (int delta)
+{
+    auto& st = trackA ? processor.trackASoundType : processor.trackBSoundType;
+    int cur = st.load();
+    cur = (cur + delta + NUM_SOUND_TYPES) % NUM_SOUND_TYPES;
+    st.store (cur);
+    updateSoundLabel();
+}
+
+void RhythmTrackComponent::updateSoundLabel()
+{
+    const int st = trackA ? processor.trackASoundType.load()
+                          : processor.trackBSoundType.load();
+    soundScroller.setSoundName (soundTypeName ((SoundType)st));
 }
 
 void RhythmTrackComponent::refreshPads()
@@ -308,15 +415,18 @@ void RhythmTrackComponent::resized()
     beatCountLabel.setBounds (w - 60,  beatsY + 2, 24, 20);
     incBtn.setBounds         (w - 34,  beatsY, btnH, btnH);
 
-    // Note row
+    // Note row (scrollable)
     const int noteY = beatsY + btnH + 8;
-    noteLabel.setBounds      (12,  noteY + 4, 40, 16);
-    noteDnBtn.setBounds      (58,  noteY,     btnH, btnH);
-    noteValueLabel.setBounds (86,  noteY + 3, 48,  18);
-    noteUpBtn.setBounds      (138, noteY,     btnH, btnH);
+    const int scrollH = 36;
+    noteLabel.setBounds       (12,  noteY + 8, 40, 16);
+    noteScroller.setBounds    (58,  noteY,     60, scrollH);
+
+    // Sound type row (scrollable)
+    soundLabel.setBounds      (128, noteY + 8, 50, 16);
+    soundScroller.setBounds   (178, noteY,     60, scrollH);
 
     // Gate row
-    const int gateY = noteY + btnH + 8;
+    const int gateY = noteY + scrollH + 8;
     gateLabel.setBounds  (12, gateY + 4, 40,       16);
     gateSlider.setBounds (56, gateY,     w - 68,   btnH);
 

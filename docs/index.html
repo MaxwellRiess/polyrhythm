@@ -321,6 +321,43 @@
   }
   .ctrl-value.accent { color: var(--accent); }
 
+  /* Scrollable selector — scroll wheel / touch swipe to change */
+  .scroll-selector {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 54px;
+    height: 42px;
+    background: var(--beat-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: ns-resize;
+    position: relative;
+    touch-action: none;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .scroll-selector:hover {
+    background: var(--beat-hover);
+    border-color: var(--accent);
+  }
+  .scroll-selector .scroll-value {
+    font-size: 13px;
+    font-weight: 700;
+    line-height: 1;
+    pointer-events: none;
+  }
+  .scroll-selector .scroll-value.accent { color: var(--accent); }
+  .scroll-selector .scroll-hint {
+    font-size: 7px;
+    color: var(--text-dim);
+    opacity: 0.4;
+    pointer-events: none;
+    line-height: 1;
+  }
+  .scroll-selector .scroll-hint-top { position: absolute; top: 2px; }
+  .scroll-selector .scroll-hint-bot { position: absolute; bottom: 2px; }
+
   .gate-slider {
     -webkit-appearance: none;
     appearance: none;
@@ -604,6 +641,11 @@
     }
     .ctrl-value { font-size: 16px; min-width: 28px; }
     .ctrl-label { font-size: 11px; }
+    .scroll-selector {
+      min-width: 64px;
+      height: 52px;
+    }
+    .scroll-selector .scroll-value { font-size: 15px; }
     .gate-slider {
       width: 100%;
       flex: 1;
@@ -761,10 +803,20 @@
       </div>
       <div class="control-row">
         <span class="ctrl-label">NOTE</span>
-        <button class="ctrl-btn" data-track="A" data-action="dec-note">&lt;</button>
-        <span class="ctrl-value accent" id="trackA-note">C2</span>
-        <button class="ctrl-btn" data-track="A" data-action="inc-note">&gt;</button>
+        <div class="scroll-selector" id="trackA-noteScroll" data-track="A" data-param="note">
+          <span class="scroll-hint scroll-hint-top">▲</span>
+          <span class="scroll-value accent" id="trackA-note">C2</span>
+          <span class="scroll-hint scroll-hint-bot">▼</span>
+        </div>
         <button class="ctrl-btn reset-btn" data-track="A" data-action="reset-notes">↺</button>
+      </div>
+      <div class="control-row">
+        <span class="ctrl-label">SOUND</span>
+        <div class="scroll-selector" id="trackA-soundScroll" data-track="A" data-param="sound">
+          <span class="scroll-hint scroll-hint-top">▲</span>
+          <span class="scroll-value" id="trackA-sound">SINE</span>
+          <span class="scroll-hint scroll-hint-bot">▼</span>
+        </div>
       </div>
       <div class="control-row">
         <span class="ctrl-label">GATE</span>
@@ -791,10 +843,20 @@
       </div>
       <div class="control-row">
         <span class="ctrl-label">NOTE</span>
-        <button class="ctrl-btn" data-track="B" data-action="dec-note">&lt;</button>
-        <span class="ctrl-value accent" id="trackB-note">D2</span>
-        <button class="ctrl-btn" data-track="B" data-action="inc-note">&gt;</button>
+        <div class="scroll-selector" id="trackB-noteScroll" data-track="B" data-param="note">
+          <span class="scroll-hint scroll-hint-top">▲</span>
+          <span class="scroll-value accent" id="trackB-note">D2</span>
+          <span class="scroll-hint scroll-hint-bot">▼</span>
+        </div>
         <button class="ctrl-btn reset-btn" data-track="B" data-action="reset-notes">↺</button>
+      </div>
+      <div class="control-row">
+        <span class="ctrl-label">SOUND</span>
+        <div class="scroll-selector" id="trackB-soundScroll" data-track="B" data-param="sound">
+          <span class="scroll-hint scroll-hint-top">▲</span>
+          <span class="scroll-value" id="trackB-sound">TRI</span>
+          <span class="scroll-hint scroll-hint-bot">▼</span>
+        </div>
       </div>
       <div class="control-row">
         <span class="ctrl-label">GATE</span>
@@ -822,6 +884,9 @@
 
 const MAX_BEATS = 16;
 
+// ── Sound Types ─────────────────────────────────────────
+const SOUND_TYPES = ['SINE', 'TRI', 'SQR', 'SAW', 'CLICK', 'NOISE'];
+
 // ── MIDI Note Helpers ────────────────────────────────────
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 function midiNoteName(n) {
@@ -840,6 +905,7 @@ const state = {
     beatCount: 4,
     channel: 0,    // MIDI channel 0-indexed (displayed as CH 01)
     gate: 0.5,     // track-level default (sets all beats)
+    soundType: 0,  // index into SOUND_TYPES
     beats: Array.from({length: MAX_BEATS}, (_, i) => ({
       active: true,
       velocity: 0.8,
@@ -851,6 +917,7 @@ const state = {
     beatCount: 3,
     channel: 1,
     gate: 0.5,
+    soundType: 1,  // TRI
     beats: Array.from({length: MAX_BEATS}, (_, i) => ({
       active: true,
       velocity: 0.8,
@@ -868,21 +935,6 @@ function ensureAudioCtx() {
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
   return audioCtx;
-}
-
-// Sine voice pool (matches JUCE plugin's audio preview)
-function triggerSineVoice(frequency, velocity = 0.5) {
-  const ctx = ensureAudioCtx();
-  const osc = ctx.createOscillator();
-  const gain = ctx.createGain();
-  osc.type = 'sine';
-  osc.frequency.value = frequency;
-  gain.gain.setValueAtTime(velocity * 0.3, ctx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
-  osc.connect(gain);
-  gain.connect(ctx.destination);
-  osc.start(ctx.currentTime);
-  osc.stop(ctx.currentTime + 0.15);
 }
 
 // ── Web MIDI ─────────────────────────────────────────────
@@ -1063,10 +1115,10 @@ function scheduleTrack(track, isTrackA, barLengthPpq, fromPpq, toPpq, audioNow, 
         // Gate duration in seconds (per-beat gate)
         const gateDuration = beatData.gate * (beatInterval / ppqPerSecond);
 
-        // Audio preview: convert MIDI note to frequency
+        // Audio preview: convert MIDI note to frequency, use track sound type
         if (state.audioEnabled) {
           const freq = 440 * Math.pow(2, (note - 69) / 12);
-          scheduleSineAt(beatAudioTime, freq, beatData.velocity, gateDuration);
+          scheduleVoiceAt(beatAudioTime, freq, beatData.velocity, track.soundType, gateDuration);
         }
 
         // MIDI output
@@ -1087,20 +1139,56 @@ function scheduleTrack(track, isTrackA, barLengthPpq, fromPpq, toPpq, audioNow, 
   }
 }
 
-function scheduleSineAt(when, frequency, velocity, duration = 0.12) {
+function scheduleVoiceAt(when, frequency, velocity, soundType, duration = 0.12) {
   const ctx = ensureAudioCtx();
-  const osc = ctx.createOscillator();
+  const safeWhen = Math.max(when, ctx.currentTime);
   const gain = ctx.createGain();
-  osc.type = 'sine';
+  gain.connect(ctx.destination);
+
+  const typeName = SOUND_TYPES[soundType] || 'SINE';
+
+  if (typeName === 'NOISE') {
+    // White noise burst
+    const dur = Math.max(0.01, Math.min(duration * 0.3, 0.08));
+    const bufLen = Math.ceil(ctx.sampleRate * (dur + 0.02));
+    const noiseBuf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+    const data = noiseBuf.getChannelData(0);
+    for (let i = 0; i < bufLen; i++) data[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    gain.gain.setValueAtTime(velocity * 0.25, safeWhen);
+    gain.gain.exponentialRampToValueAtTime(0.001, safeWhen + dur);
+    src.connect(gain);
+    src.start(safeWhen);
+    src.stop(safeWhen + dur + 0.01);
+    return;
+  }
+
+  if (typeName === 'CLICK') {
+    // Short pitched click (~4ms)
+    const dur = 0.015;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.value = frequency;
+    gain.gain.setValueAtTime(velocity * 0.4, safeWhen);
+    gain.gain.exponentialRampToValueAtTime(0.001, safeWhen + dur);
+    osc.connect(gain);
+    osc.start(safeWhen);
+    osc.stop(safeWhen + dur + 0.01);
+    return;
+  }
+
+  // Oscillator-based types
+  const osc = ctx.createOscillator();
+  const oscTypeMap = { 'SINE': 'sine', 'TRI': 'triangle', 'SQR': 'square', 'SAW': 'sawtooth' };
+  osc.type = oscTypeMap[typeName] || 'sine';
   osc.frequency.value = frequency;
 
-  const safeWhen = Math.max(when, ctx.currentTime);
   const dur = Math.max(0.02, Math.min(duration, 2.0));
   gain.gain.setValueAtTime(velocity * 0.25, safeWhen);
   gain.gain.exponentialRampToValueAtTime(0.001, safeWhen + dur);
 
   osc.connect(gain);
-  gain.connect(ctx.destination);
   osc.start(safeWhen);
   osc.stop(safeWhen + dur + 0.01);
 }
@@ -1198,6 +1286,15 @@ function createBeatPads(trackId) {
       updateTrackNoteDisplay(trackId);
     });
 
+    // Scroll wheel on pad changes per-beat note
+    pad.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 1 : -1;
+      track.beats[i].note = Math.max(0, Math.min(127, track.beats[i].note + delta));
+      pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
+      updateTrackNoteDisplay(trackId);
+    }, { passive: false });
+
     // Per-beat gate slider
     const gateInput = pad.querySelector('.pad-gate');
     gateInput.addEventListener('input', (e) => {
@@ -1238,6 +1335,11 @@ function updateTrackBeatCount(trackId) {
 function updateTrackNoteDisplay(trackId) {
   const track = trackId === 'A' ? state.trackA : state.trackB;
   document.getElementById(`track${trackId}-note`).textContent = midiNoteName(track.beats[0].note);
+}
+
+function updateTrackSoundDisplay(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  document.getElementById(`track${trackId}-sound`).textContent = SOUND_TYPES[track.soundType];
 }
 
 // ── Event Binding ────────────────────────────────────────
@@ -1290,27 +1392,81 @@ function init() {
           track.beatCount = Math.min(16, track.beatCount + 1);
           updateTrackBeatCount(trackId);
           break;
-        case 'dec-note':
-          // Shift all beats down 1 semitone
-          track.beats.forEach(b => b.note = Math.max(0, b.note - 1));
-          updateTrackNoteDisplay(trackId);
-          updateAllPadNoteNames(trackId);
-          break;
-        case 'inc-note':
-          track.beats.forEach(b => b.note = Math.min(127, b.note + 1));
-          updateTrackNoteDisplay(trackId);
-          updateAllPadNoteNames(trackId);
-          break;
-        case 'reset-notes':
-          // Reset all beats to the track's default note (C2=36 for A, D2=38 for B)
+        case 'reset-notes': {
           const defaultNote = trackId === 'A' ? 36 : 38;
           track.beats.forEach(b => b.note = defaultNote);
           updateTrackNoteDisplay(trackId);
           updateAllPadNoteNames(trackId);
           break;
+        }
       }
     });
   });
+
+  // ── Scroll Selectors (note + sound) ──────────────────────
+  function initScrollSelector(el) {
+    const trackId = el.dataset.track;
+    const param = el.dataset.param;
+
+    // Scroll wheel handler
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const delta = e.deltaY < 0 ? 1 : -1;
+      applyScrollDelta(trackId, param, delta);
+    }, { passive: false });
+
+    // Touch swipe handler
+    let touchStartY = null;
+    let accumulated = 0;
+    const SWIPE_THRESHOLD = 20; // px per step
+
+    el.addEventListener('touchstart', (e) => {
+      touchStartY = e.touches[0].clientY;
+      accumulated = 0;
+      e.preventDefault();
+    }, { passive: false });
+
+    el.addEventListener('touchmove', (e) => {
+      if (touchStartY === null) return;
+      e.preventDefault();
+      const dy = touchStartY - e.touches[0].clientY;
+      accumulated += dy;
+      touchStartY = e.touches[0].clientY;
+
+      while (accumulated >= SWIPE_THRESHOLD) {
+        applyScrollDelta(trackId, param, 1);
+        accumulated -= SWIPE_THRESHOLD;
+      }
+      while (accumulated <= -SWIPE_THRESHOLD) {
+        applyScrollDelta(trackId, param, -1);
+        accumulated += SWIPE_THRESHOLD;
+      }
+    }, { passive: false });
+
+    el.addEventListener('touchend', () => { touchStartY = null; });
+
+    // Click: top half = up, bottom half = down
+    el.addEventListener('click', (e) => {
+      const rect = el.getBoundingClientRect();
+      const delta = (e.clientY - rect.top) < rect.height / 2 ? 1 : -1;
+      applyScrollDelta(trackId, param, delta);
+    });
+  }
+
+  function applyScrollDelta(trackId, param, delta) {
+    const track = trackId === 'A' ? state.trackA : state.trackB;
+
+    if (param === 'note') {
+      track.beats.forEach(b => b.note = Math.max(0, Math.min(127, b.note + delta)));
+      updateTrackNoteDisplay(trackId);
+      updateAllPadNoteNames(trackId);
+    } else if (param === 'sound') {
+      track.soundType = (track.soundType + delta + SOUND_TYPES.length) % SOUND_TYPES.length;
+      updateTrackSoundDisplay(trackId);
+    }
+  }
+
+  document.querySelectorAll('.scroll-selector').forEach(initScrollSelector);
 
   // Track-level gate sliders — sets all beats on that track
   document.getElementById('trackA-gate').addEventListener('input', (e) => {
@@ -1397,11 +1553,13 @@ function saveState() {
       trackA: {
         beatCount: state.trackA.beatCount,
         gate: state.trackA.gate,
+        soundType: state.trackA.soundType,
         beats: state.trackA.beats,
       },
       trackB: {
         beatCount: state.trackB.beatCount,
         gate: state.trackB.gate,
+        soundType: state.trackB.soundType,
         beats: state.trackB.beats,
       },
     };
@@ -1423,6 +1581,7 @@ function loadState() {
     if (data.trackA) {
       state.trackA.beatCount = data.trackA.beatCount ?? 4;
       state.trackA.gate = data.trackA.gate ?? 0.5;
+      state.trackA.soundType = data.trackA.soundType ?? 0;
       if (data.trackA.beats) {
         data.trackA.beats.forEach((b, i) => {
           if (i < MAX_BEATS) Object.assign(state.trackA.beats[i], b);
@@ -1432,6 +1591,7 @@ function loadState() {
     if (data.trackB) {
       state.trackB.beatCount = data.trackB.beatCount ?? 3;
       state.trackB.gate = data.trackB.gate ?? 0.5;
+      state.trackB.soundType = data.trackB.soundType ?? 1;
       if (data.trackB.beats) {
         data.trackB.beats.forEach((b, i) => {
           if (i < MAX_BEATS) Object.assign(state.trackB.beats[i], b);
@@ -1451,6 +1611,8 @@ function loadState() {
     updateTrackBeatCount('B');
     updateTrackNoteDisplay('A');
     updateTrackNoteDisplay('B');
+    updateTrackSoundDisplay('A');
+    updateTrackSoundDisplay('B');
     document.getElementById('audioToggleBtn').classList.toggle('active', state.audioEnabled);
   } catch (e) {
     console.log('Could not load state:', e);

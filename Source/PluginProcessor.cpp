@@ -159,10 +159,10 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 }
 
 //==============================================================================
-void PolyrhythmProcessor::triggerVoice (double frequency)
+void PolyrhythmProcessor::triggerVoice (double frequency, SoundType type)
 {
     // Find a free voice, or steal the quietest one
-    SineVoice* target = nullptr;
+    SynthVoice* target = nullptr;
     float minAmp = 1.0f;
     for (auto& v : voices)
     {
@@ -171,10 +171,12 @@ void PolyrhythmProcessor::triggerVoice (double frequency)
     }
     if (target)
     {
-        target->phase  = 0.0;
-        target->inc    = juce::MathConstants<double>::twoPi * frequency / sampleRateVal;
-        target->amp    = 0.5f;
-        target->active = true;
+        target->phase      = 0.0;
+        target->inc        = juce::MathConstants<double>::twoPi * frequency / sampleRateVal;
+        target->amp        = 0.5f;
+        target->active     = true;
+        target->type       = type;
+        target->clickCount = (type == SoundType::Click) ? (int)(sampleRateVal * 0.004) : 0;
     }
 }
 
@@ -182,8 +184,9 @@ void PolyrhythmProcessor::renderVoices (juce::AudioBuffer<float>& buffer)
 {
     const int   numSamples  = buffer.getNumSamples();
     const int   numChannels = buffer.getNumChannels();
-    // ~80 ms exponential decay regardless of sample rate
-    const float decay = (float)std::exp (-1.0 / (0.08 * sampleRateVal));
+    // ~80 ms exponential decay (shorter for click/noise)
+    const float decayLong  = (float)std::exp (-1.0 / (0.08  * sampleRateVal));
+    const float decayShort = (float)std::exp (-1.0 / (0.015 * sampleRateVal));
 
     for (auto& v : voices)
     {
@@ -191,18 +194,61 @@ void PolyrhythmProcessor::renderVoices (juce::AudioBuffer<float>& buffer)
 
         double phase = v.phase;
         float  amp   = v.amp;
+        const float decay = (v.type == SoundType::Click || v.type == SoundType::Noise)
+                            ? decayShort : decayLong;
 
         for (int s = 0; s < numSamples; ++s)
         {
-            const float sample = (float)(std::sin (phase) * amp);
+            float sample = 0.0f;
+            const double twoPi = juce::MathConstants<double>::twoPi;
+
+            switch (v.type)
+            {
+                case SoundType::Sine:
+                    sample = (float)std::sin (phase);
+                    break;
+
+                case SoundType::Triangle:
+                    // Triangle from phase: 2/pi * asin(sin(phase))
+                    sample = (float)(2.0 / juce::MathConstants<double>::pi * std::asin (std::sin (phase)));
+                    break;
+
+                case SoundType::Square:
+                    sample = std::sin (phase) >= 0.0 ? 0.8f : -0.8f;
+                    break;
+
+                case SoundType::Saw:
+                    // Saw: phase / pi - 1, mapped to [-1, 1]
+                    sample = (float)(std::fmod (phase, twoPi) / juce::MathConstants<double>::pi - 1.0);
+                    break;
+
+                case SoundType::Click:
+                    if (v.clickCount > 0)
+                    {
+                        sample = (float)std::sin (phase) * 1.2f;
+                        v.clickCount--;
+                    }
+                    else
+                        sample = 0.0f;
+                    break;
+
+                case SoundType::Noise:
+                    sample = (random.nextFloat() * 2.0f - 1.0f);
+                    break;
+
+                default: break;
+            }
+
+            sample *= amp;
             for (int ch = 0; ch < numChannels; ++ch)
                 buffer.getWritePointer (ch)[s] += sample;
+
             phase += v.inc;
             amp   *= decay;
         }
 
-        v.phase  = std::fmod (phase, juce::MathConstants<double>::twoPi);
-        v.amp    = amp;
+        v.phase = std::fmod (phase, juce::MathConstants<double>::twoPi);
+        v.amp   = amp;
         if (v.amp < 0.001f) v.active = false;
     }
 }
@@ -271,8 +317,13 @@ void PolyrhythmProcessor::processTrack (bool isTrackA,
                     trackBFireCount.fetch_add (1, std::memory_order_relaxed);
                 }
 
-                // Audio preview: Track A = 880 Hz (high), Track B = 440 Hz (low)
-                triggerVoice (isTrackA ? 880.0 : 440.0);
+                // Audio preview using per-track sound type and actual note frequency
+                {
+                    const double freq = 440.0 * std::pow (2.0, (beatNote - 69) / 12.0);
+                    const auto stype = (SoundType)(isTrackA ? trackASoundType.load()
+                                                            : trackBSoundType.load());
+                    triggerVoice (freq, stype);
+                }
 
                 // Note-off scheduling
                 const int noteOffSample = sampleOffset + gateSamples;
@@ -307,6 +358,8 @@ void PolyrhythmProcessor::getStateInformation (juce::MemoryBlock& destData)
         beatTree.setProperty ("bVel"    + juce::String ((int)i), trackBVelocity[i].load(), nullptr);
         beatTree.setProperty ("bNote"   + juce::String ((int)i), trackBNotes[i].load(),    nullptr);
     }
+    beatTree.setProperty ("aSoundType", trackASoundType.load(), nullptr);
+    beatTree.setProperty ("bSoundType", trackBSoundType.load(), nullptr);
     state.addChild (beatTree, -1, nullptr);
 
     std::unique_ptr<juce::XmlElement> xml (state.createXml());
@@ -333,6 +386,8 @@ void PolyrhythmProcessor::setStateInformation (const void* data, int sizeInBytes
             trackBVelocity[i] = (float)beatTree.getProperty ("bVel"    + juce::String ((int)i), 0.8f);
             trackBNotes[i]    = (int)  beatTree.getProperty ("bNote"   + juce::String ((int)i), 38);
         }
+        trackASoundType.store ((int)beatTree.getProperty ("aSoundType", (int)SoundType::Sine));
+        trackBSoundType.store ((int)beatTree.getProperty ("bSoundType", (int)SoundType::Triangle));
     }
 }
 

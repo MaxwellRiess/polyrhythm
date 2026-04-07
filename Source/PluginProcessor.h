@@ -6,6 +6,34 @@
 
 static constexpr int MAX_BEATS = 16;
 
+// Built-in preview sound types
+enum class SoundType
+{
+    Sine = 0,
+    Triangle,
+    Square,
+    Saw,
+    Click,
+    Noise,
+    NumTypes
+};
+
+static constexpr int NUM_SOUND_TYPES = (int)SoundType::NumTypes;
+
+inline juce::String soundTypeName (SoundType t)
+{
+    switch (t)
+    {
+        case SoundType::Sine:     return "SINE";
+        case SoundType::Triangle: return "TRI";
+        case SoundType::Square:   return "SQR";
+        case SoundType::Saw:      return "SAW";
+        case SoundType::Click:    return "CLICK";
+        case SoundType::Noise:    return "NOISE";
+        default:                  return "?";
+    }
+}
+
 //==============================================================================
 class PolyrhythmProcessor : public juce::AudioProcessor
 {
@@ -47,6 +75,10 @@ public:
     std::array<std::atomic<float>, MAX_BEATS> trackBVelocity;
     std::array<std::atomic<int>,   MAX_BEATS> trackANotes;   // per-beat MIDI note
     std::array<std::atomic<int>,   MAX_BEATS> trackBNotes;
+
+    // Per-track preview sound type
+    std::atomic<int> trackASoundType { (int)SoundType::Sine };
+    std::atomic<int> trackBSoundType { (int)SoundType::Triangle };
 
     //==========================================================================
     // Parameters (automatable)
@@ -105,18 +137,20 @@ private:
 
     juce::Random random;
 
-    // Simple sine-wave voice for built-in audio preview
-    struct SineVoice
+    // Synth voice for built-in audio preview
+    struct SynthVoice
     {
-        double phase  = 0.0;
-        double inc    = 0.0;   // phase increment per sample
-        float  amp    = 0.0f;
-        bool   active = false;
+        double    phase      = 0.0;
+        double    inc        = 0.0;   // phase increment per sample
+        float     amp        = 0.0f;
+        bool      active     = false;
+        SoundType type       = SoundType::Sine;
+        int       clickCount = 0;     // samples remaining for click type
     };
     static constexpr int NUM_VOICES = 16;
-    std::array<SineVoice, NUM_VOICES> voices {};
+    std::array<SynthVoice, NUM_VOICES> voices {};
 
-    void triggerVoice (double frequency);
+    void triggerVoice (double frequency, SoundType type);
     void renderVoices (juce::AudioBuffer<float>& buffer);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PolyrhythmProcessor)
