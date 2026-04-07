@@ -1,0 +1,459 @@
+#include "PluginEditor.h"
+
+static juce::Font monoFont (float size, bool bold = false)
+{
+    return juce::Font (juce::Font::getDefaultMonospacedFontName(), size,
+                       bold ? juce::Font::bold : juce::Font::plain);
+}
+
+//==============================================================================
+// BeatPadComponent
+//==============================================================================
+BeatPadComponent::BeatPadComponent (std::atomic<bool>& activeRef,
+                                     std::atomic<float>& velocityRef,
+                                     std::atomic<int>&   noteRef,
+                                     int index)
+    : active (activeRef), velocity (velocityRef), note (noteRef), idx (index)
+{
+    setRepaintsOnMouseActivity (true);
+
+    auto styleNoteBtn = [this] (juce::TextButton& btn)
+    {
+        btn.setColour (juce::TextButton::buttonColourId,  Theme::PanelDark);
+        btn.setColour (juce::TextButton::textColourOnId,  Theme::Accent);
+        btn.setColour (juce::TextButton::textColourOffId, Theme::Accent);
+        addAndMakeVisible (btn);
+    };
+    styleNoteBtn (noteUpBtn);
+    styleNoteBtn (noteDnBtn);
+
+    noteUpBtn.onClick = [this] { changeNote (+1); };
+    noteDnBtn.onClick = [this] { changeNote (-1); };
+}
+
+void BeatPadComponent::setFlash (float amount)
+{
+    flashAmount = amount;
+    repaint();
+}
+
+void BeatPadComponent::paint (juce::Graphics& g)
+{
+    const bool  isActive = active.load();
+    const float vel      = velocity.load();
+
+    // Background
+    g.setColour (hovering ? Theme::BeatBgHover : Theme::BeatBg);
+    g.fillRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 3.0f);
+
+    // Orange active bar at top (height scales with velocity)
+    if (isActive)
+    {
+        const float barH = 6.0f + vel * (float)getHeight() * 0.35f;
+        g.setColour (Theme::Accent);
+        g.fillRoundedRectangle (1.0f, 1.0f, (float)getWidth() - 2.0f, barH, 3.0f);
+    }
+
+    // White flash pulse overlay — fades out after beat fires
+    if (flashAmount > 0.002f)
+    {
+        g.setColour (Theme::Flash.withAlpha (flashAmount * 0.35f));
+        g.fillRoundedRectangle (getLocalBounds().toFloat().reduced (1.0f), 3.0f);
+
+        // Bright top edge
+        g.setColour (Theme::Flash.withAlpha (flashAmount * 0.9f));
+        g.fillRoundedRectangle (1.0f, 1.0f, (float)getWidth() - 2.0f, 3.0f, 2.0f);
+    }
+
+    // Note name — centred between the two buttons
+    const juce::String noteName = juce::MidiMessage::getMidiNoteName (note.load(), true, true, 4);
+    const float noteFontSize = juce::jlimit (9.0f, 15.0f, (float)getWidth() * 0.38f);
+    g.setFont (monoFont (noteFontSize, true));
+    g.setColour (isActive ? Theme::TextAccent : Theme::TextDim);
+    g.drawText (noteName, 2, getHeight() / 2 - 10, getWidth() - 4, 20,
+                juce::Justification::centred, false);
+
+    // Beat index label
+    g.setFont (monoFont (9.0f));
+    g.setColour (Theme::TextDim.withAlpha (0.6f));
+    g.drawText (juce::String::formatted ("%02d", idx + 1),
+                0, getHeight() - 14, getWidth(), 12,
+                juce::Justification::centred, false);
+}
+
+void BeatPadComponent::mouseDown (const juce::MouseEvent&)
+{
+    active.store (!active.load());
+    if (onChange) onChange();
+    repaint();
+}
+
+void BeatPadComponent::mouseEnter (const juce::MouseEvent&) { hovering = true;  repaint(); }
+void BeatPadComponent::mouseExit  (const juce::MouseEvent&) { hovering = false; repaint(); }
+
+void BeatPadComponent::changeNote (int delta)
+{
+    note.store (juce::jlimit (0, 127, note.load() + delta));
+    if (onChange) onChange();
+    repaint();
+}
+
+void BeatPadComponent::resized()
+{
+    const int w   = getWidth();
+    const int h   = getHeight();
+    const int btnH = juce::jlimit (16, 24, h / 5);
+    const int btnW = w - 6;
+    const int mid  = h / 2;
+
+    noteUpBtn.setBounds (3, mid - btnH - 14, btnW, btnH);
+    noteDnBtn.setBounds (3, mid + 14,        btnW, btnH);
+}
+
+//==============================================================================
+// RhythmTrackComponent
+//==============================================================================
+RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
+    : processor (p), trackA (isA)
+{
+    auto makeLabel = [this] (juce::Label& lbl, const juce::String& txt,
+                              float size, juce::Colour col, bool bold = false)
+    {
+        lbl.setText (txt, juce::dontSendNotification);
+        lbl.setFont (monoFont (size, bold));
+        lbl.setColour (juce::Label::textColourId, col);
+        lbl.setJustificationType (juce::Justification::centredLeft);
+        addAndMakeVisible (lbl);
+    };
+
+    makeLabel (trackNameLabel, isA ? "RHYTHM_A" : "RHYTHM_B", 14.0f, Theme::TextPrimary, true);
+    makeLabel (beatsLabel,     "BEATS",                        10.0f, Theme::TextDim);
+    makeLabel (beatCountLabel, "4",                            14.0f, Theme::TextPrimary, true);
+    makeLabel (noteLabel,      "NOTE",                         10.0f, Theme::TextDim);
+    makeLabel (noteValueLabel, "C2",                           12.0f, Theme::TextAccent, true);
+    makeLabel (gateLabel,      "GATE",                         10.0f, Theme::TextDim);
+
+    // Channel badge
+    channelLabel.setText (isA ? "CH 01" : "CH 02", juce::dontSendNotification);
+    channelLabel.setFont (monoFont (10.0f));
+    channelLabel.setColour (juce::Label::textColourId,       Theme::TextPrimary);
+    channelLabel.setColour (juce::Label::backgroundColourId, Theme::Accent);
+    channelLabel.setJustificationType (juce::Justification::centred);
+    addAndMakeVisible (channelLabel);
+
+    auto styleBtn = [this] (juce::TextButton& btn)
+    {
+        btn.setColour (juce::TextButton::buttonColourId,  Theme::BeatBg);
+        btn.setColour (juce::TextButton::textColourOnId,  Theme::TextPrimary);
+        btn.setColour (juce::TextButton::textColourOffId, Theme::TextPrimary);
+        addAndMakeVisible (btn);
+    };
+
+    styleBtn (decBtn);    styleBtn (incBtn);
+    styleBtn (noteDnBtn); styleBtn (noteUpBtn);
+
+    decBtn.onClick    = [this] { changeBeatCount (-1); };
+    incBtn.onClick    = [this] { changeBeatCount (+1); };
+    noteDnBtn.onClick = [this] { changeNote (-1); };
+    noteUpBtn.onClick = [this] { changeNote (+1); };
+
+    // Gate slider
+    gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    gateSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    gateSlider.setRange (0.01, 0.99, 0.01);
+    gateSlider.setColour (juce::Slider::trackColourId,      Theme::Accent);
+    gateSlider.setColour (juce::Slider::backgroundColourId, Theme::Border);
+    gateSlider.setColour (juce::Slider::thumbColourId,      Theme::Accent);
+    addAndMakeVisible (gateSlider);
+
+    gateAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
+                 (processor.apvts, isA ? "trackA_gate" : "trackB_gate", gateSlider);
+
+    // Beat pads
+    auto& activeArr = trackA ? processor.trackAActive   : processor.trackBActive;
+    auto& velArr    = trackA ? processor.trackAVelocity : processor.trackBVelocity;
+    auto& noteArr   = trackA ? processor.trackANotes    : processor.trackBNotes;
+
+    for (int i = 0; i < MAX_BEATS; ++i)
+    {
+        pads[i] = std::make_unique<BeatPadComponent> (activeArr[i], velArr[i], noteArr[i], i);
+        pads[i]->onChange = [this] { repaint(); };
+        addAndMakeVisible (*pads[i]);
+    }
+
+    updateBeatCountLabel();
+    updateNoteLabel();
+    refreshPads();
+
+    // Initialise fire-count baseline so we don't flash on first load
+    lastFireCount = trackA ? processor.trackAFireCount.load()
+                           : processor.trackBFireCount.load();
+
+    startTimerHz (30);   // 30 Hz animation timer
+}
+
+void RhythmTrackComponent::timerCallback()
+{
+    // Check if a new beat has fired since last tick
+    const uint64_t current = trackA ? processor.trackAFireCount.load()
+                                    : processor.trackBFireCount.load();
+    if (current != lastFireCount)
+    {
+        lastFireCount = current;
+        flashBeatIdx  = trackA ? processor.trackACurrentBeat.load()
+                               : processor.trackBCurrentBeat.load();
+        flashAmount   = 1.0f;
+        updateNoteLabel();   // keep "ALL" note display in sync
+    }
+
+    // Decay and repaint the flashing pad
+    if (flashAmount > 0.002f)
+    {
+        flashAmount *= 0.62f;   // ~5 frames to near-zero at 30 Hz ≈ 165 ms decay
+
+        const int count = trackA ? processor.getTrackABeatCount()
+                                 : processor.getTrackBBeatCount();
+        if (flashBeatIdx >= 0 && flashBeatIdx < count && pads[flashBeatIdx])
+            pads[flashBeatIdx]->setFlash (flashAmount);
+    }
+    else if (flashAmount > 0.0f)
+    {
+        // Clear the pad flash when fully decayed
+        if (flashBeatIdx >= 0 && pads[flashBeatIdx])
+            pads[flashBeatIdx]->setFlash (0.0f);
+        flashAmount  = 0.0f;
+        flashBeatIdx = -1;
+    }
+}
+
+void RhythmTrackComponent::changeBeatCount (int delta)
+{
+    auto* param = trackA
+        ? dynamic_cast<juce::AudioParameterInt*> (processor.apvts.getParameter ("trackA_beats"))
+        : dynamic_cast<juce::AudioParameterInt*> (processor.apvts.getParameter ("trackB_beats"));
+
+    if (param)
+        *param = juce::jlimit (1, 16, param->get() + delta);
+
+    updateBeatCountLabel();
+    refreshPads();
+    resized();
+}
+
+void RhythmTrackComponent::changeNote (int delta)
+{
+    if (trackA)
+        processor.shiftTrackANotes (delta);
+    else
+        processor.shiftTrackBNotes (delta);
+
+    updateNoteLabel();
+    repaint();   // pads update their displayed note names
+}
+
+void RhythmTrackComponent::updateBeatCountLabel()
+{
+    const int count = trackA ? processor.getTrackABeatCount()
+                             : processor.getTrackBBeatCount();
+    beatCountLabel.setText (juce::String (count), juce::dontSendNotification);
+}
+
+void RhythmTrackComponent::updateNoteLabel()
+{
+    // Show beat-0 note as the "reference" note for this track
+    const int note = trackA ? processor.trackANotes[0].load()
+                            : processor.trackBNotes[0].load();
+    noteValueLabel.setText (juce::MidiMessage::getMidiNoteName (note, true, true, 4),
+                            juce::dontSendNotification);
+}
+
+void RhythmTrackComponent::refreshPads()
+{
+    const int count = trackA ? processor.getTrackABeatCount()
+                             : processor.getTrackBBeatCount();
+    for (int i = 0; i < MAX_BEATS; ++i)
+        pads[i]->setVisible (i < count);
+}
+
+void RhythmTrackComponent::paint (juce::Graphics& g)
+{
+    g.setColour (Theme::Panel);
+    g.fillRoundedRectangle (getLocalBounds().toFloat(), 4.0f);
+
+    // Accent left border
+    g.setColour (Theme::Accent);
+    g.fillRect (0, 0, 3, getHeight());
+
+    // Sub-label
+    g.setFont (monoFont (9.0f));
+    g.setColour (Theme::TextDim);
+    g.drawText (trackA ? "POLY_LOGIC_01" : "POLY_LOGIC_02",
+                12, 28, 200, 14, juce::Justification::centredLeft, false);
+}
+
+void RhythmTrackComponent::resized()
+{
+    const int w = getWidth();
+    const int H = getHeight();
+    const int btnH = 24;
+
+    // Header
+    trackNameLabel.setBounds (12, 8,     180, 20);
+    channelLabel.setBounds   (w - 54, 8, 46,  18);
+
+    // Beats row
+    const int beatsY = 46;
+    beatsLabel.setBounds     (12,      beatsY + 4, 50, 16);
+    decBtn.setBounds         (w - 86,  beatsY, btnH, btnH);
+    beatCountLabel.setBounds (w - 60,  beatsY + 2, 24, 20);
+    incBtn.setBounds         (w - 34,  beatsY, btnH, btnH);
+
+    // Note row
+    const int noteY = beatsY + btnH + 8;
+    noteLabel.setBounds      (12,  noteY + 4, 40, 16);
+    noteDnBtn.setBounds      (58,  noteY,     btnH, btnH);
+    noteValueLabel.setBounds (86,  noteY + 3, 48,  18);
+    noteUpBtn.setBounds      (138, noteY,     btnH, btnH);
+
+    // Gate row
+    const int gateY = noteY + btnH + 8;
+    gateLabel.setBounds  (12, gateY + 4, 40,       16);
+    gateSlider.setBounds (56, gateY,     w - 68,   btnH);
+
+    // Beat pads — fill remaining height
+    const int padAreaY = gateY + btnH + 12;
+    const int padAreaH = H - padAreaY - 10;
+    const int count    = trackA ? processor.getTrackABeatCount()
+                                : processor.getTrackBBeatCount();
+    const int gap      = 5;
+    const int padW     = (w - 16 - (count - 1) * gap) / std::max (1, count);
+
+    for (int i = 0; i < MAX_BEATS; ++i)
+        if (i < count)
+            pads[i]->setBounds (8 + i * (padW + gap), padAreaY, padW, padAreaH);
+}
+
+//==============================================================================
+// LabelledSlider
+//==============================================================================
+LabelledSlider::LabelledSlider (const juce::String& labelText, juce::Colour fillColour)
+    : colour (fillColour)
+{
+    label.setText (labelText, juce::dontSendNotification);
+    label.setFont (monoFont (9.0f));
+    label.setColour (juce::Label::textColourId, Theme::TextDim);
+    label.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (label);
+
+    slider.setSliderStyle (juce::Slider::LinearHorizontal);
+    slider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    slider.setColour (juce::Slider::trackColourId,      fillColour);
+    slider.setColour (juce::Slider::backgroundColourId, Theme::Border);
+    slider.setColour (juce::Slider::thumbColourId,      fillColour);
+    addAndMakeVisible (slider);
+}
+
+void LabelledSlider::resized()
+{
+    const int lw = 46;
+    label.setBounds  (0,       0, lw,              getHeight());
+    slider.setBounds (lw + 4,  0, getWidth() - lw - 4, getHeight());
+}
+
+//==============================================================================
+// PolyrhythmEditor
+//==============================================================================
+PolyrhythmEditor::PolyrhythmEditor (PolyrhythmProcessor& p)
+    : AudioProcessorEditor (&p), audioProcessor (p),
+      trackAComp (p, true), trackBComp (p, false)
+{
+    setSize (1024, 520);
+
+    // Title
+    titleLabel.setText ("POLYRHYTHM_MODULE_V1", juce::dontSendNotification);
+    titleLabel.setFont (monoFont (13.0f, true));
+    titleLabel.setColour (juce::Label::textColourId, Theme::Accent);
+    addAndMakeVisible (titleLabel);
+
+    // BPM display
+    bpmValueLabel.setText ("---", juce::dontSendNotification);
+    bpmValueLabel.setFont (monoFont (28.0f, true));
+    bpmValueLabel.setColour (juce::Label::textColourId, Theme::Accent);
+    bpmValueLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (bpmValueLabel);
+
+    bpmUnitLabel.setText ("BPM", juce::dontSendNotification);
+    bpmUnitLabel.setFont (monoFont (10.0f));
+    bpmUnitLabel.setColour (juce::Label::textColourId, Theme::TextDim);
+    addAndMakeVisible (bpmUnitLabel);
+
+    // Global sliders
+    swingSlider.slider.setRange (0.0, 0.5, 0.01);
+    probSlider.slider.setRange  (0.0, 1.0, 0.01);
+
+    swingAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
+                  (audioProcessor.apvts, "swing",       swingSlider.slider);
+    probAttach  = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
+                  (audioProcessor.apvts, "probability", probSlider.slider);
+
+    addAndMakeVisible (swingSlider);
+    addAndMakeVisible (probSlider);
+
+    // Track panels
+    addAndMakeVisible (trackAComp);
+    addAndMakeVisible (trackBComp);
+
+    startTimerHz (10);   // BPM readout
+}
+
+PolyrhythmEditor::~PolyrhythmEditor() { stopTimer(); }
+
+void PolyrhythmEditor::timerCallback()
+{
+    const double bpm = audioProcessor.currentBpm.load();
+    if (bpm > 0.0)
+        bpmValueLabel.setText (juce::String ((int)std::round (bpm)),
+                               juce::dontSendNotification);
+}
+
+void PolyrhythmEditor::paint (juce::Graphics& g)
+{
+    const int W = getWidth();
+    const int H = getHeight();
+
+    g.fillAll (Theme::BG);
+
+    // Header bar
+    g.setColour (Theme::PanelDark);
+    g.fillRect (0, 0, W, 44);
+    g.setColour (Theme::Border);
+    g.drawLine (0, 44, W, 44, 1.0f);
+
+    // Vertical divider between tracks
+    g.setColour (Theme::Accent);
+    g.fillRect (W / 2 - 1, 50, 2, H - 54);
+}
+
+void PolyrhythmEditor::resized()
+{
+    const int W = getWidth();
+    const int H = getHeight();
+
+    // Header row
+    titleLabel.setBounds   (12,       8,  280, 28);
+    bpmValueLabel.setBounds(W - 190,  4,  80,  36);
+    bpmUnitLabel.setBounds (W - 106,  20, 30,  16);
+    swingSlider.setBounds  (W - 340,  12, 130, 20);
+    probSlider.setBounds   (W - 200,  12, 80,  20);   // slight gap before BPM
+
+    // Wait — probSlider overlaps bpmValueLabel; shift left
+    swingSlider.setBounds  (W - 360,  12, 130, 20);
+    probSlider.setBounds   (W - 220,  12, 100, 20);
+
+    // Track panels — fill everything below the header
+    const int trackY = 50;
+    const int trackH = H - trackY - 4;
+    const int halfW  = W / 2 - 2;
+    trackAComp.setBounds (2,          trackY, halfW, trackH);
+    trackBComp.setBounds (halfW + 4,  trackY, halfW, trackH);
+}

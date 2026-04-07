@@ -1,0 +1,1291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>POLYRHYTHM_MODULE_V1</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:          #1A1A1A;
+    --panel:       #222222;
+    --panel-dark:  #181818;
+    --accent:      #FF5500;
+    --accent-dim:  #803300;
+    --beat-bg:     #2B2B2B;
+    --beat-hover:  #363636;
+    --text:        #FFFFFF;
+    --text-dim:    #777777;
+    --text-accent: #FF5500;
+    --border:      #333333;
+    --flash:       #FFFFFF;
+  }
+
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+  }
+
+  /* ── Header Bar ─────────────────────────────────────── */
+  .header {
+    background: var(--panel-dark);
+    border-bottom: 1px solid var(--border);
+    padding: 0 16px;
+    height: 44px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+  }
+  .header .title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .header .mode-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-left: -8px;
+  }
+  .header .spacer { flex: 1; }
+
+  /* ── Transport Bar ──────────────────────────────────── */
+  .transport {
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+  .transport-btn {
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--border);
+    padding: 6px 20px;
+    cursor: pointer;
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background 0.1s, border-color 0.1s;
+  }
+  .transport-btn:hover { border-color: var(--text-dim); }
+  .transport-btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--text);
+  }
+  .transport-btn .icon { font-size: 10px; }
+
+  /* ── Controls Bar (BPM, Swing, Prob) ────────────────── */
+  .controls-bar {
+    background: var(--bg);
+    padding: 8px 16px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .bpm-display {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+  }
+  .bpm-display .label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+  }
+  .bpm-display .value {
+    font-size: 32px;
+    font-weight: 700;
+    color: var(--accent);
+    min-width: 72px;
+  }
+  .bpm-display .unit {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+
+  .bpm-controls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .bpm-btn {
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    width: 28px;
+    height: 28px;
+    background: var(--beat-bg);
+    color: var(--text);
+    border: none;
+    border-radius: 2px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .bpm-btn:hover { background: var(--beat-hover); }
+
+  .slider-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .slider-group .slider-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    min-width: 38px;
+    text-align: right;
+  }
+  .slider-group input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+  }
+  .slider-group input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    background: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .slider-group input[type="range"]::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    background: var(--accent);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .slider-value {
+    font-size: 10px;
+    color: var(--text-dim);
+    min-width: 28px;
+  }
+
+  .midi-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 9px;
+    color: var(--text-dim);
+  }
+  .midi-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--border);
+  }
+  .midi-dot.active { background: var(--accent); }
+
+  /* ── Main Track Area ────────────────────────────────── */
+  .tracks-container {
+    flex: 1;
+    display: flex;
+    gap: 4px;
+    padding: 6px;
+    overflow: hidden;
+    min-height: 0;
+  }
+
+  .track-panel {
+    flex: 1;
+    background: var(--panel);
+    border-radius: 4px;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .track-panel::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--accent);
+  }
+
+  .track-divider {
+    width: 2px;
+    background: var(--accent);
+    flex-shrink: 0;
+  }
+
+  /* Track header */
+  .track-header {
+    padding: 8px 12px 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .track-name {
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .track-sub {
+    font-size: 9px;
+    color: var(--text-dim);
+    margin-top: 2px;
+    padding-left: 12px;
+  }
+  .channel-badge {
+    font-size: 10px;
+    background: var(--accent);
+    color: var(--text);
+    padding: 2px 8px;
+    border-radius: 2px;
+  }
+
+  /* Track controls row */
+  .track-controls {
+    padding: 8px 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .control-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ctrl-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    min-width: 36px;
+  }
+  .ctrl-btn {
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 700;
+    width: 24px;
+    height: 24px;
+    background: var(--beat-bg);
+    color: var(--text);
+    border: none;
+    border-radius: 2px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ctrl-btn:hover { background: var(--beat-hover); }
+  .ctrl-btn.reset-btn {
+    font-size: 11px;
+    margin-left: 4px;
+    color: var(--text-dim);
+  }
+  .ctrl-btn.reset-btn:hover { color: var(--accent); }
+  .ctrl-value {
+    font-size: 14px;
+    font-weight: 700;
+    min-width: 20px;
+    text-align: center;
+  }
+  .ctrl-value.accent { color: var(--accent); }
+
+  .gate-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 80px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+  }
+  .gate-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 10px;
+    height: 10px;
+    background: var(--accent);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+
+  /* Beat pad grid */
+  .pad-grid {
+    flex: 1;
+    display: flex;
+    gap: 4px;
+    padding: 6px 8px 10px 8px;
+    min-height: 0;
+    align-items: stretch;
+  }
+
+  .beat-pad {
+    flex: 1;
+    min-width: 0;
+    background: var(--beat-bg);
+    border-radius: 3px;
+    position: relative;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.1s;
+    overflow: hidden;
+  }
+  .beat-pad:hover { background: var(--beat-hover); }
+  .beat-pad.hidden { display: none; }
+
+  /* Active bar at top */
+  .beat-pad .active-bar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 0;
+    background: var(--accent);
+    border-radius: 3px 3px 0 0;
+    transition: height 0.15s;
+    pointer-events: none;
+  }
+  .beat-pad.active .active-bar {
+    height: 30%;
+  }
+
+  /* Flash overlay */
+  .beat-pad .flash-overlay {
+    position: absolute;
+    inset: 0;
+    background: var(--flash);
+    opacity: 0;
+    border-radius: 3px;
+    pointer-events: none;
+  }
+  .beat-pad .flash-edge {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--flash);
+    opacity: 0;
+    border-radius: 2px;
+    pointer-events: none;
+  }
+
+  /* Note controls on pad */
+  .pad-note-btn {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 700;
+    width: 85%;
+    height: 20px;
+    background: var(--panel-dark);
+    color: var(--accent);
+    border: none;
+    border-radius: 2px;
+    cursor: pointer;
+    z-index: 1;
+  }
+  .pad-note-btn:hover { background: var(--border); }
+
+  .pad-note-name {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text-dim);
+    z-index: 1;
+    margin: 4px 0;
+  }
+  .beat-pad.active .pad-note-name { color: var(--text-accent); }
+
+  .pad-gate {
+    width: 85%;
+    z-index: 1;
+    margin: 10px 0 0 0;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+  }
+  .pad-gate::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 8px;
+    height: 8px;
+    background: var(--accent-dim);
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .pad-gate::-moz-range-thumb {
+    width: 8px;
+    height: 8px;
+    background: var(--accent-dim);
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .beat-pad.active .pad-gate::-webkit-slider-thumb { background: var(--accent); }
+  .beat-pad.active .pad-gate::-moz-range-thumb { background: var(--accent); }
+
+  .pad-gate-label {
+    font-size: 7px;
+    color: var(--text-dim);
+    opacity: 0.5;
+    z-index: 1;
+    margin: 6px 0 -2px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .pad-index {
+    font-size: 9px;
+    color: var(--text-dim);
+    opacity: 0.6;
+    position: absolute;
+    bottom: 3px;
+    z-index: 1;
+  }
+
+  /* ── Footer ─────────────────────────────────────────── */
+  .footer {
+    height: 36px;
+    background: var(--panel-dark);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .footer-label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .footer-label:hover { border-color: var(--text-dim); }
+  .footer-label.active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ── Responsive ─────────────────────────────────────── */
+  @media (max-width: 700px) {
+    .tracks-container { flex-direction: column; }
+    .track-divider { width: auto; height: 2px; }
+    .bpm-display .value { font-size: 24px; }
+    .controls-bar { flex-wrap: wrap; gap: 10px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <span class="title">POLYRHYTHM_MODULE_V1</span>
+  <span class="mode-label">WEB BROWSER</span>
+  <span class="spacer"></span>
+  <div class="midi-indicator">
+    <div class="midi-dot" id="midiDot"></div>
+    <span id="midiStatus">NO MIDI</span>
+  </div>
+</div>
+
+<!-- Transport -->
+<div class="transport">
+  <button class="transport-btn" id="startBtn">
+    <span class="icon">▶</span> START
+  </button>
+  <button class="transport-btn" id="stopBtn">
+    <span class="icon">■</span> STOP
+  </button>
+  <button class="transport-btn" id="resetBtn">
+    <span class="icon">↺</span> RESET
+  </button>
+  <button class="transport-btn" id="tapBtn">
+    <span class="icon">♩</span> TAP
+  </button>
+</div>
+
+<!-- Controls Bar -->
+<div class="controls-bar">
+  <div class="bpm-display">
+    <div>
+      <div class="label">CLOCK</div>
+      <div class="value" id="bpmValue">120</div>
+    </div>
+    <div class="unit">BPM</div>
+  </div>
+  <div class="bpm-controls">
+    <button class="bpm-btn" id="bpmDec">−</button>
+    <button class="bpm-btn" id="bpmInc">+</button>
+  </div>
+
+  <span class="spacer" style="flex:1"></span>
+
+  <div class="slider-group">
+    <span class="slider-label">SWING</span>
+    <input type="range" id="swingSlider" min="0" max="50" value="0">
+    <span class="slider-value" id="swingValue">0%</span>
+  </div>
+  <div class="slider-group">
+    <span class="slider-label">PROB</span>
+    <input type="range" id="probSlider" min="0" max="100" value="100">
+    <span class="slider-value" id="probValue">100%</span>
+  </div>
+</div>
+
+<!-- Tracks -->
+<div class="tracks-container">
+  <div class="track-panel" id="trackA">
+    <div class="track-header">
+      <span class="track-name">RHYTHM_A</span>
+      <span class="channel-badge">CH 01</span>
+    </div>
+    <div class="track-sub">POLY_LOGIC_01</div>
+    <div class="track-controls">
+      <div class="control-row">
+        <span class="ctrl-label">BEATS</span>
+        <button class="ctrl-btn" data-track="A" data-action="dec-beats">−</button>
+        <span class="ctrl-value" id="trackA-beatCount">4</span>
+        <button class="ctrl-btn" data-track="A" data-action="inc-beats">+</button>
+      </div>
+      <div class="control-row">
+        <span class="ctrl-label">NOTE</span>
+        <button class="ctrl-btn" data-track="A" data-action="dec-note">&lt;</button>
+        <span class="ctrl-value accent" id="trackA-note">C2</span>
+        <button class="ctrl-btn" data-track="A" data-action="inc-note">&gt;</button>
+        <button class="ctrl-btn reset-btn" data-track="A" data-action="reset-notes">↺</button>
+      </div>
+      <div class="control-row">
+        <span class="ctrl-label">GATE</span>
+        <input type="range" class="gate-slider" id="trackA-gate" min="1" max="99" value="50">
+      </div>
+    </div>
+    <div class="pad-grid" id="trackA-pads"></div>
+  </div>
+
+  <div class="track-divider"></div>
+
+  <div class="track-panel" id="trackB">
+    <div class="track-header">
+      <span class="track-name">RHYTHM_B</span>
+      <span class="channel-badge">CH 02</span>
+    </div>
+    <div class="track-sub">POLY_LOGIC_02</div>
+    <div class="track-controls">
+      <div class="control-row">
+        <span class="ctrl-label">BEATS</span>
+        <button class="ctrl-btn" data-track="B" data-action="dec-beats">−</button>
+        <span class="ctrl-value" id="trackB-beatCount">3</span>
+        <button class="ctrl-btn" data-track="B" data-action="inc-beats">+</button>
+      </div>
+      <div class="control-row">
+        <span class="ctrl-label">NOTE</span>
+        <button class="ctrl-btn" data-track="B" data-action="dec-note">&lt;</button>
+        <span class="ctrl-value accent" id="trackB-note">D2</span>
+        <button class="ctrl-btn" data-track="B" data-action="inc-note">&gt;</button>
+        <button class="ctrl-btn reset-btn" data-track="B" data-action="reset-notes">↺</button>
+      </div>
+      <div class="control-row">
+        <span class="ctrl-label">GATE</span>
+        <input type="range" class="gate-slider" id="trackB-gate" min="1" max="99" value="50">
+      </div>
+    </div>
+    <div class="pad-grid" id="trackB-pads"></div>
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <span class="footer-label active" id="quantizeBtn">QUANTIZE</span>
+  <span class="footer-label" id="swingOffBtn">SWING_OFF</span>
+  <span style="flex:1"></span>
+  <span class="footer-label active" id="audioToggleBtn">AUDIO</span>
+  <span class="footer-label" id="midiOutBtn">MIDI OUT</span>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// POLYRHYTHM MODULE — Web Audio Engine
+// Faithful port of the JUCE PolyrhythmProcessor
+// ═══════════════════════════════════════════════════════════
+
+const MAX_BEATS = 16;
+
+// ── MIDI Note Helpers ────────────────────────────────────
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function midiNoteName(n) {
+  if (n < 0 || n > 127) return '---';
+  return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 2);
+}
+
+// ── State ────────────────────────────────────────────────
+const state = {
+  playing: false,
+  bpm: 120,
+  swing: 0,        // 0–0.5
+  probability: 1,  // 0–1
+  audioEnabled: true,
+  trackA: {
+    beatCount: 4,
+    channel: 0,    // MIDI channel 0-indexed (displayed as CH 01)
+    gate: 0.5,     // track-level default (sets all beats)
+    beats: Array.from({length: MAX_BEATS}, (_, i) => ({
+      active: true,
+      velocity: 0.8,
+      note: 36,    // C2
+      gate: 0.5,   // per-beat gate
+    })),
+  },
+  trackB: {
+    beatCount: 3,
+    channel: 1,
+    gate: 0.5,
+    beats: Array.from({length: MAX_BEATS}, (_, i) => ({
+      active: true,
+      velocity: 0.8,
+      note: 38,    // D2
+      gate: 0.5,
+    })),
+  },
+};
+
+// ── Web Audio Context ────────────────────────────────────
+let audioCtx = null;
+function ensureAudioCtx() {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  return audioCtx;
+}
+
+// Sine voice pool (matches JUCE plugin's audio preview)
+function triggerSineVoice(frequency, velocity = 0.5) {
+  const ctx = ensureAudioCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = frequency;
+  gain.gain.setValueAtTime(velocity * 0.3, ctx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.12);
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(ctx.currentTime);
+  osc.stop(ctx.currentTime + 0.15);
+}
+
+// ── Web MIDI ─────────────────────────────────────────────
+let midiOutput = null;
+let midiEnabled = false;
+
+async function initMidi() {
+  if (!navigator.requestMIDIAccess) return;
+  try {
+    const access = await navigator.requestMIDIAccess();
+    const outputs = Array.from(access.outputs.values());
+    if (outputs.length > 0) {
+      midiOutput = outputs[0];
+      midiEnabled = true;
+      document.getElementById('midiDot').classList.add('active');
+      document.getElementById('midiStatus').textContent = midiOutput.name || 'MIDI OUT';
+    }
+    access.onstatechange = () => {
+      const outs = Array.from(access.outputs.values());
+      if (outs.length > 0 && !midiOutput) {
+        midiOutput = outs[0];
+        midiEnabled = true;
+        document.getElementById('midiDot').classList.add('active');
+        document.getElementById('midiStatus').textContent = midiOutput.name || 'MIDI OUT';
+      }
+    };
+  } catch (e) {
+    console.log('Web MIDI not available:', e);
+  }
+}
+
+function sendMidiNoteOn(channel, note, velocity) {
+  if (!midiEnabled || !midiOutput) return;
+  midiOutput.send([0x90 | (channel & 0x0F), note & 0x7F, velocity & 0x7F]);
+}
+
+function sendMidiNoteOff(channel, note) {
+  if (!midiEnabled || !midiOutput) return;
+  midiOutput.send([0x80 | (channel & 0x0F), note & 0x7F, 0]);
+}
+
+// ── Sequencer Engine ─────────────────────────────────────
+// Uses a lookahead scheduler (like the Web Audio API clock pattern)
+// to achieve sample-accurate timing, similar to the JUCE PPQ approach
+
+let schedulerTimer = null;
+let startTime = 0;       // audioContext time when playback started
+let currentPpq = 0;      // current position in PPQ (quarter notes)
+let lastScheduledPpq = 0;
+
+const LOOKAHEAD_MS = 25;     // how often to check (ms)
+const SCHEDULE_AHEAD = 0.05; // how far ahead to schedule (seconds)
+
+// Track which beats have been fired in the current bar to avoid double-fires
+let trackALastBarStart = -1;
+let trackBLastBarStart = -1;
+let trackAFiredBeats = new Set();
+let trackBFiredBeats = new Set();
+
+function startPlayback() {
+  if (state.playing) return;
+  ensureAudioCtx();
+  state.playing = true;
+  startTime = audioCtx.currentTime;
+  currentPpq = 0;
+  lastScheduledPpq = 0;
+  trackALastBarStart = -1;
+  trackBLastBarStart = -1;
+  trackAFiredBeats.clear();
+  trackBFiredBeats.clear();
+
+  document.getElementById('startBtn').classList.add('active');
+  document.getElementById('stopBtn').classList.remove('active');
+
+  scheduler();
+}
+
+function stopPlayback() {
+  state.playing = false;
+  if (schedulerTimer) {
+    clearTimeout(schedulerTimer);
+    schedulerTimer = null;
+  }
+  document.getElementById('startBtn').classList.remove('active');
+  document.getElementById('stopBtn').classList.add('active');
+
+  // Clear all active visual states
+  document.querySelectorAll('.beat-pad').forEach(pad => {
+    pad.querySelector('.flash-overlay').style.opacity = '0';
+    pad.querySelector('.flash-edge').style.opacity = '0';
+  });
+}
+
+function resetPlayback() {
+  stopPlayback();
+  currentPpq = 0;
+  lastScheduledPpq = 0;
+}
+
+function scheduler() {
+  if (!state.playing) return;
+
+  const ctx = ensureAudioCtx();
+  const now = ctx.currentTime;
+  const elapsed = now - startTime;
+
+  // Convert elapsed time to PPQ
+  const ppqPerSecond = state.bpm / 60;
+  const currentPpqNow = elapsed * ppqPerSecond;
+
+  // Schedule ahead
+  const scheduleUntilTime = now + SCHEDULE_AHEAD;
+  const scheduleUntilPpq = (scheduleUntilTime - startTime) * ppqPerSecond;
+
+  // Bar length in PPQ (assuming 4/4)
+  const barLengthPpq = 4.0;
+
+  scheduleTrack(state.trackA, true, barLengthPpq, lastScheduledPpq, scheduleUntilPpq, now, ppqPerSecond);
+  scheduleTrack(state.trackB, false, barLengthPpq, lastScheduledPpq, scheduleUntilPpq, now, ppqPerSecond);
+
+  lastScheduledPpq = scheduleUntilPpq;
+
+  schedulerTimer = setTimeout(scheduler, LOOKAHEAD_MS);
+}
+
+function scheduleTrack(track, isTrackA, barLengthPpq, fromPpq, toPpq, audioNow, ppqPerSecond) {
+  const beatCount = track.beatCount;
+  const beatInterval = barLengthPpq / Math.max(1, beatCount);
+  const swing = state.swing;
+  const prob = state.probability;
+
+  const firedBeats = isTrackA ? trackAFiredBeats : trackBFiredBeats;
+  let lastBarStart = isTrackA ? trackALastBarStart : trackBLastBarStart;
+
+  // Check two bars to handle boundary cases
+  const barStart = Math.floor(fromPpq / barLengthPpq) * barLengthPpq;
+
+  for (let barOffset = 0; barOffset <= 1; barOffset++) {
+    const currentBarStart = barStart + barOffset * barLengthPpq;
+
+    // Reset fired beats when entering a new bar
+    if (currentBarStart !== lastBarStart) {
+      firedBeats.clear();
+      lastBarStart = currentBarStart;
+      if (isTrackA) trackALastBarStart = currentBarStart;
+      else trackBLastBarStart = currentBarStart;
+    }
+
+    for (let beat = 0; beat < beatCount; beat++) {
+      const beatData = track.beats[beat];
+      if (!beatData.active) continue;
+
+      // Apply swing to odd beats
+      let beatOffset = beat * beatInterval;
+      if (beat % 2 === 1) {
+        beatOffset += swing * beatInterval;
+      }
+
+      const beatPpq = currentBarStart + beatOffset;
+
+      if (beatPpq >= fromPpq && beatPpq < toPpq) {
+        // Unique key for this beat in this bar
+        const beatKey = `${currentBarStart}-${beat}`;
+        if (firedBeats.has(beatKey)) continue;
+        firedBeats.add(beatKey);
+
+        // Probability gate
+        if (prob < 1.0 && Math.random() > prob) continue;
+
+        // Calculate the exact audio time for this beat
+        const beatTimeOffset = (beatPpq - (audioNow - (audioNow - startTime) * 0 ));
+        // More precise: convert PPQ position to absolute time
+        const beatAudioTime = startTime + beatPpq / ppqPerSecond;
+
+        const velocity = Math.round(beatData.velocity * 127);
+        const note = beatData.note;
+
+        // Gate duration in seconds (per-beat gate)
+        const gateDuration = beatData.gate * (beatInterval / ppqPerSecond);
+
+        // Audio preview: convert MIDI note to frequency
+        if (state.audioEnabled) {
+          const freq = 440 * Math.pow(2, (note - 69) / 12);
+          scheduleSineAt(beatAudioTime, freq, beatData.velocity, gateDuration);
+        }
+
+        // MIDI output
+        if (midiEnabled) {
+          const delayMs = Math.max(0, (beatAudioTime - audioCtx.currentTime) * 1000);
+          setTimeout(() => {
+            sendMidiNoteOn(track.channel, note, velocity);
+            setTimeout(() => sendMidiNoteOff(track.channel, note), gateDuration * 1000);
+          }, delayMs);
+        }
+
+        // Visual flash (schedule on UI thread)
+        const visualDelay = Math.max(0, (beatAudioTime - audioCtx.currentTime) * 1000);
+        const trackId = isTrackA ? 'A' : 'B';
+        setTimeout(() => flashBeatPad(trackId, beat), visualDelay);
+      }
+    }
+  }
+}
+
+function scheduleSineAt(when, frequency, velocity, duration = 0.12) {
+  const ctx = ensureAudioCtx();
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = frequency;
+
+  const safeWhen = Math.max(when, ctx.currentTime);
+  const dur = Math.max(0.02, Math.min(duration, 2.0));
+  gain.gain.setValueAtTime(velocity * 0.25, safeWhen);
+  gain.gain.exponentialRampToValueAtTime(0.001, safeWhen + dur);
+
+  osc.connect(gain);
+  gain.connect(ctx.destination);
+  osc.start(safeWhen);
+  osc.stop(safeWhen + dur + 0.01);
+}
+
+// ── Flash Animation ──────────────────────────────────────
+function flashBeatPad(trackId, beatIndex) {
+  const padGrid = document.getElementById(`track${trackId}-pads`);
+  const pad = padGrid?.children[beatIndex];
+  if (!pad) return;
+
+  const overlay = pad.querySelector('.flash-overlay');
+  const edge = pad.querySelector('.flash-edge');
+  if (!overlay || !edge) return;
+
+  // Immediate flash
+  overlay.style.transition = 'none';
+  edge.style.transition = 'none';
+  overlay.style.opacity = '0.35';
+  edge.style.opacity = '0.9';
+
+  // Force reflow
+  overlay.offsetHeight;
+
+  // Fade out
+  overlay.style.transition = 'opacity 0.18s ease-out';
+  edge.style.transition = 'opacity 0.18s ease-out';
+  overlay.style.opacity = '0';
+  edge.style.opacity = '0';
+}
+
+// ── Tap Tempo ────────────────────────────────────────────
+let tapTimes = [];
+function handleTap() {
+  const now = performance.now();
+  tapTimes.push(now);
+
+  // Keep only recent taps (within 2 seconds of each other)
+  tapTimes = tapTimes.filter(t => now - t < 2000);
+
+  if (tapTimes.length >= 2) {
+    let totalInterval = 0;
+    for (let i = 1; i < tapTimes.length; i++) {
+      totalInterval += tapTimes[i] - tapTimes[i - 1];
+    }
+    const avgInterval = totalInterval / (tapTimes.length - 1);
+    const bpm = Math.round(60000 / avgInterval);
+    state.bpm = Math.max(20, Math.min(300, bpm));
+    updateBpmDisplay();
+  }
+}
+
+// ── UI Rendering ─────────────────────────────────────────
+function createBeatPads(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  const container = document.getElementById(`track${trackId}-pads`);
+  container.innerHTML = '';
+
+  for (let i = 0; i < MAX_BEATS; i++) {
+    const pad = document.createElement('div');
+    pad.className = 'beat-pad' + (track.beats[i].active ? ' active' : '') + (i >= track.beatCount ? ' hidden' : '');
+    pad.dataset.track = trackId;
+    pad.dataset.beat = i;
+
+    pad.innerHTML = `
+      <div class="active-bar"></div>
+      <div class="flash-overlay"></div>
+      <div class="flash-edge"></div>
+      <button class="pad-note-btn" data-action="note-up">+</button>
+      <span class="pad-note-name">${midiNoteName(track.beats[i].note)}</span>
+      <button class="pad-note-btn" data-action="note-down">−</button>
+      <span class="pad-gate-label">gate</span>
+      <input type="range" class="pad-gate" min="1" max="99" value="${Math.round(track.beats[i].gate * 100)}" title="Gate">
+      <span class="pad-index">${String(i + 1).padStart(2, '0')}</span>
+    `;
+
+    // Toggle active on pad click (but not on buttons or sliders)
+    pad.addEventListener('click', (e) => {
+      if (e.target.classList.contains('pad-note-btn')) return;
+      if (e.target.classList.contains('pad-gate')) return;
+      track.beats[i].active = !track.beats[i].active;
+      pad.classList.toggle('active');
+    });
+
+    // Note buttons
+    pad.querySelector('[data-action="note-up"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      track.beats[i].note = Math.min(127, track.beats[i].note + 1);
+      pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
+      updateTrackNoteDisplay(trackId);
+    });
+    pad.querySelector('[data-action="note-down"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      track.beats[i].note = Math.max(0, track.beats[i].note - 1);
+      pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
+      updateTrackNoteDisplay(trackId);
+    });
+
+    // Per-beat gate slider
+    const gateInput = pad.querySelector('.pad-gate');
+    gateInput.addEventListener('input', (e) => {
+      e.stopPropagation();
+      track.beats[i].gate = e.target.value / 100;
+    });
+    gateInput.addEventListener('click', (e) => e.stopPropagation());
+    gateInput.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    container.appendChild(pad);
+  }
+}
+
+function refreshPadVisibility(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  const container = document.getElementById(`track${trackId}-pads`);
+  const pads = container.children;
+  for (let i = 0; i < MAX_BEATS; i++) {
+    if (i < track.beatCount) {
+      pads[i].classList.remove('hidden');
+    } else {
+      pads[i].classList.add('hidden');
+    }
+  }
+}
+
+function updateBpmDisplay() {
+  document.getElementById('bpmValue').textContent = state.bpm;
+}
+
+function updateTrackBeatCount(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  document.getElementById(`track${trackId}-beatCount`).textContent = track.beatCount;
+  refreshPadVisibility(trackId);
+}
+
+function updateTrackNoteDisplay(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  document.getElementById(`track${trackId}-note`).textContent = midiNoteName(track.beats[0].note);
+}
+
+// ── Event Binding ────────────────────────────────────────
+function init() {
+  // Transport
+  document.getElementById('startBtn').addEventListener('click', () => {
+    ensureAudioCtx();
+    startPlayback();
+  });
+  document.getElementById('stopBtn').addEventListener('click', stopPlayback);
+  document.getElementById('resetBtn').addEventListener('click', resetPlayback);
+  document.getElementById('tapBtn').addEventListener('click', handleTap);
+
+  // BPM
+  document.getElementById('bpmDec').addEventListener('click', () => {
+    state.bpm = Math.max(20, state.bpm - 1);
+    updateBpmDisplay();
+  });
+  document.getElementById('bpmInc').addEventListener('click', () => {
+    state.bpm = Math.min(300, state.bpm + 1);
+    updateBpmDisplay();
+  });
+
+  // Global sliders
+  const swingSlider = document.getElementById('swingSlider');
+  swingSlider.addEventListener('input', () => {
+    state.swing = swingSlider.value / 100; // 0–0.5
+    document.getElementById('swingValue').textContent = swingSlider.value + '%';
+  });
+
+  const probSlider = document.getElementById('probSlider');
+  probSlider.addEventListener('input', () => {
+    state.probability = probSlider.value / 100;
+    document.getElementById('probValue').textContent = probSlider.value + '%';
+  });
+
+  // Track controls via event delegation
+  document.querySelectorAll('.ctrl-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const trackId = btn.dataset.track;
+      const action = btn.dataset.action;
+      const track = trackId === 'A' ? state.trackA : state.trackB;
+
+      switch (action) {
+        case 'dec-beats':
+          track.beatCount = Math.max(1, track.beatCount - 1);
+          updateTrackBeatCount(trackId);
+          break;
+        case 'inc-beats':
+          track.beatCount = Math.min(16, track.beatCount + 1);
+          updateTrackBeatCount(trackId);
+          break;
+        case 'dec-note':
+          // Shift all beats down 1 semitone
+          track.beats.forEach(b => b.note = Math.max(0, b.note - 1));
+          updateTrackNoteDisplay(trackId);
+          updateAllPadNoteNames(trackId);
+          break;
+        case 'inc-note':
+          track.beats.forEach(b => b.note = Math.min(127, b.note + 1));
+          updateTrackNoteDisplay(trackId);
+          updateAllPadNoteNames(trackId);
+          break;
+        case 'reset-notes':
+          // Reset all beats to the track's default note (C2=36 for A, D2=38 for B)
+          const defaultNote = trackId === 'A' ? 36 : 38;
+          track.beats.forEach(b => b.note = defaultNote);
+          updateTrackNoteDisplay(trackId);
+          updateAllPadNoteNames(trackId);
+          break;
+      }
+    });
+  });
+
+  // Track-level gate sliders — sets all beats on that track
+  document.getElementById('trackA-gate').addEventListener('input', (e) => {
+    const g = e.target.value / 100;
+    state.trackA.gate = g;
+    state.trackA.beats.forEach(b => b.gate = g);
+    updateAllPadGates('A');
+  });
+  document.getElementById('trackB-gate').addEventListener('input', (e) => {
+    const g = e.target.value / 100;
+    state.trackB.gate = g;
+    state.trackB.beats.forEach(b => b.gate = g);
+    updateAllPadGates('B');
+  });
+
+  // Footer buttons
+  document.getElementById('swingOffBtn').addEventListener('click', () => {
+    const btn = document.getElementById('swingOffBtn');
+    if (btn.classList.contains('active')) {
+      btn.classList.remove('active');
+    } else {
+      btn.classList.add('active');
+      state.swing = 0;
+      swingSlider.value = 0;
+      document.getElementById('swingValue').textContent = '0%';
+    }
+  });
+
+  document.getElementById('audioToggleBtn').addEventListener('click', () => {
+    state.audioEnabled = !state.audioEnabled;
+    document.getElementById('audioToggleBtn').classList.toggle('active', state.audioEnabled);
+  });
+
+  document.getElementById('midiOutBtn').addEventListener('click', () => {
+    initMidi();
+    document.getElementById('midiOutBtn').classList.toggle('active');
+  });
+
+  // Create beat pads
+  createBeatPads('A');
+  createBeatPads('B');
+
+  // Init MIDI
+  initMidi();
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      e.preventDefault();
+      if (state.playing) stopPlayback();
+      else startPlayback();
+    }
+  });
+}
+
+function updateAllPadNoteNames(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  const container = document.getElementById(`track${trackId}-pads`);
+  const pads = container.children;
+  for (let i = 0; i < MAX_BEATS; i++) {
+    const nameEl = pads[i]?.querySelector('.pad-note-name');
+    if (nameEl) nameEl.textContent = midiNoteName(track.beats[i].note);
+  }
+}
+
+function updateAllPadGates(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  const container = document.getElementById(`track${trackId}-pads`);
+  const pads = container.children;
+  for (let i = 0; i < MAX_BEATS; i++) {
+    const slider = pads[i]?.querySelector('.pad-gate');
+    if (slider) slider.value = Math.round(track.beats[i].gate * 100);
+  }
+}
+
+// ── State Persistence (localStorage) ─────────────────────
+function saveState() {
+  try {
+    const data = {
+      bpm: state.bpm,
+      swing: state.swing,
+      probability: state.probability,
+      audioEnabled: state.audioEnabled,
+      trackA: {
+        beatCount: state.trackA.beatCount,
+        gate: state.trackA.gate,
+        beats: state.trackA.beats,
+      },
+      trackB: {
+        beatCount: state.trackB.beatCount,
+        gate: state.trackB.gate,
+        beats: state.trackB.beats,
+      },
+    };
+    localStorage.setItem('polyrhythm_state', JSON.stringify(data));
+  } catch (e) {}
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem('polyrhythm_state');
+    if (!raw) return;
+    const data = JSON.parse(raw);
+
+    state.bpm = data.bpm ?? 120;
+    state.swing = data.swing ?? 0;
+    state.probability = data.probability ?? 1;
+    state.audioEnabled = data.audioEnabled ?? true;
+
+    if (data.trackA) {
+      state.trackA.beatCount = data.trackA.beatCount ?? 4;
+      state.trackA.gate = data.trackA.gate ?? 0.5;
+      if (data.trackA.beats) {
+        data.trackA.beats.forEach((b, i) => {
+          if (i < MAX_BEATS) Object.assign(state.trackA.beats[i], b);
+        });
+      }
+    }
+    if (data.trackB) {
+      state.trackB.beatCount = data.trackB.beatCount ?? 3;
+      state.trackB.gate = data.trackB.gate ?? 0.5;
+      if (data.trackB.beats) {
+        data.trackB.beats.forEach((b, i) => {
+          if (i < MAX_BEATS) Object.assign(state.trackB.beats[i], b);
+        });
+      }
+    }
+
+    // Restore UI
+    updateBpmDisplay();
+    document.getElementById('swingSlider').value = Math.round(state.swing * 100);
+    document.getElementById('swingValue').textContent = Math.round(state.swing * 100) + '%';
+    document.getElementById('probSlider').value = Math.round(state.probability * 100);
+    document.getElementById('probValue').textContent = Math.round(state.probability * 100) + '%';
+    document.getElementById('trackA-gate').value = Math.round(state.trackA.gate * 100);
+    document.getElementById('trackB-gate').value = Math.round(state.trackB.gate * 100);
+    updateTrackBeatCount('A');
+    updateTrackBeatCount('B');
+    updateTrackNoteDisplay('A');
+    updateTrackNoteDisplay('B');
+    document.getElementById('audioToggleBtn').classList.toggle('active', state.audioEnabled);
+  } catch (e) {
+    console.log('Could not load state:', e);
+  }
+}
+
+// Auto-save every 2 seconds
+setInterval(saveState, 2000);
+
+// ── Boot ─────────────────────────────────────────────────
+loadState();
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,344 @@
+#include "PluginProcessor.h"
+#include "PluginEditor.h"
+
+//==============================================================================
+PolyrhythmProcessor::PolyrhythmProcessor()
+    : AudioProcessor (BusesProperties()),   // MIDI effect — no audio buses
+      apvts (*this, nullptr, "Parameters", createParameterLayout())
+{
+    // Default beat state: only beat 0 active per track
+    for (size_t i = 0; i < MAX_BEATS; ++i)
+    {
+        trackAActive[i]   = true;
+        trackBActive[i]   = true;
+        trackAVelocity[i] = 0.8f;
+        trackBVelocity[i] = 0.8f;
+        trackANotes[i]    = 36;   // C2 default for track A
+        trackBNotes[i]    = 38;   // D2 default for track B
+    }
+}
+
+PolyrhythmProcessor::~PolyrhythmProcessor() {}
+
+//==============================================================================
+juce::AudioProcessorValueTreeState::ParameterLayout
+PolyrhythmProcessor::createParameterLayout()
+{
+    std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
+
+    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackA_beats",   "Track A Beats",          1,  16,  4));
+    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackB_beats",   "Track B Beats",          1,  16,  3));
+    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackA_channel", "Track A MIDI Channel",   1,  16,  1));
+    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackB_channel", "Track B MIDI Channel",   1,  16,  1));
+    // Per-beat notes are stored in the beat state ValueTree, not as automatable params
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("swing",          "Swing",                  0.0f, 0.5f,  0.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("trackA_gate",    "Track A Gate",           0.01f, 0.99f, 0.5f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("trackB_gate",    "Track B Gate",           0.01f, 0.99f, 0.5f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>("probability",    "Probability",            0.0f,  1.0f,  1.0f));
+
+    return { params.begin(), params.end() };
+}
+
+//==============================================================================
+// Parameter helpers
+int   PolyrhythmProcessor::getTrackABeatCount() const { return (int)*apvts.getRawParameterValue ("trackA_beats"); }
+int   PolyrhythmProcessor::getTrackBBeatCount() const { return (int)*apvts.getRawParameterValue ("trackB_beats"); }
+int   PolyrhythmProcessor::getTrackAChannel()   const { return (int)*apvts.getRawParameterValue ("trackA_channel"); }
+int   PolyrhythmProcessor::getTrackBChannel()   const { return (int)*apvts.getRawParameterValue ("trackB_channel"); }
+int   PolyrhythmProcessor::getTrackANote()      const { return trackANotes[0].load(); }
+int   PolyrhythmProcessor::getTrackBNote()      const { return trackBNotes[0].load(); }
+
+void  PolyrhythmProcessor::shiftTrackANotes (int semitones)
+{
+    for (auto& n : trackANotes)
+        n.store (juce::jlimit (0, 127, n.load() + semitones));
+}
+void  PolyrhythmProcessor::shiftTrackBNotes (int semitones)
+{
+    for (auto& n : trackBNotes)
+        n.store (juce::jlimit (0, 127, n.load() + semitones));
+}
+float PolyrhythmProcessor::getSwing()           const { return *apvts.getRawParameterValue ("swing"); }
+float PolyrhythmProcessor::getTrackAGate()      const { return *apvts.getRawParameterValue ("trackA_gate"); }
+float PolyrhythmProcessor::getTrackBGate()      const { return *apvts.getRawParameterValue ("trackB_gate"); }
+float PolyrhythmProcessor::getProbability()     const { return *apvts.getRawParameterValue ("probability"); }
+
+//==============================================================================
+void PolyrhythmProcessor::prepareToPlay (double sr, int)
+{
+    sampleRateVal = sr;
+    pendingNoteOffs.clear();
+}
+
+void PolyrhythmProcessor::releaseResources() {}
+
+bool PolyrhythmProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
+{
+    // MIDI effect — no audio buses
+    return layouts.getMainInputChannelSet()  == juce::AudioChannelSet::disabled()
+        && layouts.getMainOutputChannelSet() == juce::AudioChannelSet::disabled();
+}
+
+//==============================================================================
+void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
+                                         juce::MidiBuffer& midiMessages)
+{
+    buffer.clear();   // no audio output as a MIDI effect
+
+    auto* playHead = getPlayHead();
+    if (playHead == nullptr) return;
+
+    auto posOpt = playHead->getPosition();
+    if (!posOpt.hasValue()) return;
+
+    const bool playing = posOpt->getIsPlaying();
+    transportPlaying.store (playing);
+
+    // Update BPM display for the UI
+    if (auto bpmOpt = posOpt->getBpm())
+        currentBpm.store (*bpmOpt);
+
+    if (!playing)
+    {
+        if (wasPlaying)
+        {
+            // Flush all pending note-offs immediately
+            for (auto& noff : pendingNoteOffs)
+                midiMessages.addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note), 0);
+            pendingNoteOffs.clear();
+            wasPlaying = false;
+        }
+        return;
+    }
+
+    wasPlaying = true;
+
+    auto ppqOpt = posOpt->getPpqPosition();
+    if (!ppqOpt.hasValue()) return;
+
+    const double bpm           = currentBpm.load();
+    const double blockStartPpq = *ppqOpt;
+    const double ppqPerSample  = bpm / (60.0 * sampleRateVal);
+    const double blockEndPpq   = blockStartPpq + buffer.getNumSamples() * ppqPerSample;
+
+    // Bar length in PPQ from the time signature (default 4/4)
+    int numerator = 4, denominator = 4;
+    if (auto tsOpt = posOpt->getTimeSignature())
+    {
+        numerator   = tsOpt->numerator;
+        denominator = tsOpt->denominator;
+    }
+    const double barLengthPpq = (4.0 * numerator) / denominator;
+
+    // Process pending note-offs from previous blocks
+    {
+        std::vector<PendingNoteOff> remaining;
+        remaining.reserve (pendingNoteOffs.size());
+        for (auto& noff : pendingNoteOffs)
+        {
+            if (noff.samplesRemaining < buffer.getNumSamples())
+                midiMessages.addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note),
+                                       noff.samplesRemaining);
+            else
+                remaining.push_back ({ noff.samplesRemaining - buffer.getNumSamples(),
+                                       noff.channel, noff.note });
+        }
+        pendingNoteOffs = std::move (remaining);
+    }
+
+    const double beatIntervalA = barLengthPpq / std::max (1, getTrackABeatCount());
+    const double beatIntervalB = barLengthPpq / std::max (1, getTrackBBeatCount());
+
+    const int gateSamplesA = std::max (1, (int)(getTrackAGate() * beatIntervalA / ppqPerSample));
+    const int gateSamplesB = std::max (1, (int)(getTrackBGate() * beatIntervalB / ppqPerSample));
+
+    processTrack (true,  barLengthPpq, blockStartPpq, blockEndPpq, ppqPerSample,
+                  buffer.getNumSamples(), gateSamplesA, midiMessages);
+    processTrack (false, barLengthPpq, blockStartPpq, blockEndPpq, ppqPerSample,
+                  buffer.getNumSamples(), gateSamplesB, midiMessages);
+}
+
+//==============================================================================
+void PolyrhythmProcessor::triggerVoice (double frequency)
+{
+    // Find a free voice, or steal the quietest one
+    SineVoice* target = nullptr;
+    float minAmp = 1.0f;
+    for (auto& v : voices)
+    {
+        if (!v.active)  { target = &v; break; }
+        if (v.amp < minAmp) { minAmp = v.amp; target = &v; }
+    }
+    if (target)
+    {
+        target->phase  = 0.0;
+        target->inc    = juce::MathConstants<double>::twoPi * frequency / sampleRateVal;
+        target->amp    = 0.5f;
+        target->active = true;
+    }
+}
+
+void PolyrhythmProcessor::renderVoices (juce::AudioBuffer<float>& buffer)
+{
+    const int   numSamples  = buffer.getNumSamples();
+    const int   numChannels = buffer.getNumChannels();
+    // ~80 ms exponential decay regardless of sample rate
+    const float decay = (float)std::exp (-1.0 / (0.08 * sampleRateVal));
+
+    for (auto& v : voices)
+    {
+        if (!v.active) continue;
+
+        double phase = v.phase;
+        float  amp   = v.amp;
+
+        for (int s = 0; s < numSamples; ++s)
+        {
+            const float sample = (float)(std::sin (phase) * amp);
+            for (int ch = 0; ch < numChannels; ++ch)
+                buffer.getWritePointer (ch)[s] += sample;
+            phase += v.inc;
+            amp   *= decay;
+        }
+
+        v.phase  = std::fmod (phase, juce::MathConstants<double>::twoPi);
+        v.amp    = amp;
+        if (v.amp < 0.001f) v.active = false;
+    }
+}
+
+//==============================================================================
+void PolyrhythmProcessor::processTrack (bool isTrackA,
+                                         double barLengthPpq,
+                                         double blockStartPpq,
+                                         double blockEndPpq,
+                                         double ppqPerSample,
+                                         int    numSamples,
+                                         int    gateSamples,
+                                         juce::MidiBuffer& midiOut)
+{
+    const int beatCount = isTrackA ? getTrackABeatCount() : getTrackBBeatCount();
+    const int channel   = isTrackA ? getTrackAChannel()   : getTrackBChannel();
+    const float prob    = getProbability();
+    const float swing   = getSwing();
+
+    auto& activeArr = isTrackA ? trackAActive   : trackBActive;
+    auto& velArr    = isTrackA ? trackAVelocity : trackBVelocity;
+    auto& noteArr   = isTrackA ? trackANotes    : trackBNotes;
+
+    const double beatInterval = barLengthPpq / std::max (1, beatCount);
+
+    // We check the current bar and one bar ahead to handle block-boundary cases
+    const double barStart = std::floor (blockStartPpq / barLengthPpq) * barLengthPpq;
+
+    for (int barOffset = 0; barOffset <= 1; ++barOffset)
+    {
+        const double currentBarStart = barStart + barOffset * barLengthPpq;
+
+        for (size_t beat = 0; beat < (size_t)beatCount; ++beat)
+        {
+            if (!activeArr[beat].load()) continue;
+
+            // Apply swing: push odd-numbered beats (1, 3, 5…) forward in time
+            double beatOffset = (double)beat * beatInterval;
+            if (beat % 2 == 1)
+                beatOffset += swing * beatInterval;
+
+            const double beatPpq = currentBarStart + beatOffset;
+
+            if (beatPpq >= blockStartPpq && beatPpq < blockEndPpq)
+            {
+                // Probability gate
+                if (prob < 1.0f && random.nextFloat() > prob) continue;
+
+                int sampleOffset = (int)((beatPpq - blockStartPpq) / ppqPerSample);
+                sampleOffset = juce::jlimit (0, numSamples - 1, sampleOffset);
+
+                const int velInt  = juce::jlimit (1, 127,
+                    (int)(velArr[beat].load() * 127.0f));
+                const int beatNote = juce::jlimit (0, 127, noteArr[beat].load());
+
+                // Note-on (MIDI)
+                midiOut.addEvent (juce::MidiMessage::noteOn (channel, beatNote, (juce::uint8) velInt),
+                                  sampleOffset);
+
+                // Signal the UI which beat just fired (for pulse animation)
+                if (isTrackA) {
+                    trackACurrentBeat.store ((int)beat, std::memory_order_relaxed);
+                    trackAFireCount.fetch_add (1, std::memory_order_relaxed);
+                } else {
+                    trackBCurrentBeat.store ((int)beat, std::memory_order_relaxed);
+                    trackBFireCount.fetch_add (1, std::memory_order_relaxed);
+                }
+
+                // Audio preview: Track A = 880 Hz (high), Track B = 440 Hz (low)
+                triggerVoice (isTrackA ? 880.0 : 440.0);
+
+                // Note-off scheduling
+                const int noteOffSample = sampleOffset + gateSamples;
+                if (noteOffSample < numSamples)
+                    midiOut.addEvent (juce::MidiMessage::noteOff (channel, beatNote), noteOffSample);
+                else
+                    pendingNoteOffs.push_back ({ noteOffSample - numSamples, channel, beatNote });
+            }
+        }
+    }
+}
+
+//==============================================================================
+juce::AudioProcessorEditor* PolyrhythmProcessor::createEditor()
+{
+    return new PolyrhythmEditor (*this);
+}
+
+//==============================================================================
+void PolyrhythmProcessor::getStateInformation (juce::MemoryBlock& destData)
+{
+    auto state = apvts.copyState();
+
+    // Append beat grid data as a child tree
+    juce::ValueTree beatTree ("BeatStates");
+    for (size_t i = 0; i < MAX_BEATS; ++i)
+    {
+        beatTree.setProperty ("aActive" + juce::String ((int)i), trackAActive[i].load(),   nullptr);
+        beatTree.setProperty ("aVel"    + juce::String ((int)i), trackAVelocity[i].load(), nullptr);
+        beatTree.setProperty ("aNote"   + juce::String ((int)i), trackANotes[i].load(),    nullptr);
+        beatTree.setProperty ("bActive" + juce::String ((int)i), trackBActive[i].load(),   nullptr);
+        beatTree.setProperty ("bVel"    + juce::String ((int)i), trackBVelocity[i].load(), nullptr);
+        beatTree.setProperty ("bNote"   + juce::String ((int)i), trackBNotes[i].load(),    nullptr);
+    }
+    state.addChild (beatTree, -1, nullptr);
+
+    std::unique_ptr<juce::XmlElement> xml (state.createXml());
+    copyXmlToBinary (*xml, destData);
+}
+
+void PolyrhythmProcessor::setStateInformation (const void* data, int sizeInBytes)
+{
+    std::unique_ptr<juce::XmlElement> xml (getXmlFromBinary (data, sizeInBytes));
+    if (xml == nullptr) return;
+
+    auto state = juce::ValueTree::fromXml (*xml);
+    apvts.replaceState (state);
+
+    auto beatTree = state.getChildWithName ("BeatStates");
+    if (beatTree.isValid())
+    {
+        for (size_t i = 0; i < MAX_BEATS; ++i)
+        {
+            trackAActive[i]   = (bool) beatTree.getProperty ("aActive" + juce::String ((int)i), i == 0);
+            trackAVelocity[i] = (float)beatTree.getProperty ("aVel"    + juce::String ((int)i), 0.8f);
+            trackANotes[i]    = (int)  beatTree.getProperty ("aNote"   + juce::String ((int)i), 36);
+            trackBActive[i]   = (bool) beatTree.getProperty ("bActive" + juce::String ((int)i), i == 0);
+            trackBVelocity[i] = (float)beatTree.getProperty ("bVel"    + juce::String ((int)i), 0.8f);
+            trackBNotes[i]    = (int)  beatTree.getProperty ("bNote"   + juce::String ((int)i), 38);
+        }
+    }
+}
+
+//==============================================================================
+// This creates new instances of the plugin
+juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
+{
+    return new PolyrhythmProcessor();
+}
