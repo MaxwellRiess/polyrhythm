@@ -1064,11 +1064,26 @@ const state = {
 
 // ── Web Audio Context ────────────────────────────────────
 let audioCtx = null;
+let audioUnlocked = false;
+
 function ensureAudioCtx() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
   if (audioCtx.state === 'suspended') audioCtx.resume();
+
+  // iOS routes Web Audio to the earpiece by default. Playing a silent
+  // HTML audio element forces the browser to switch to the loudspeaker.
+  if (!audioUnlocked) {
+    audioUnlocked = true;
+    try {
+      const silentData = 'data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRwVHAAAAAAD/+1DEAAAHAAGf9AAAIgAANIAAAARMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/7UMQbAAADSAAAAAAAAANIAAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVV';
+      const audio = new Audio(silentData);
+      audio.setAttribute('playsinline', '');
+      audio.play().catch(() => {});
+    } catch (e) {}
+  }
+
   return audioCtx;
 }
 
@@ -1820,6 +1835,15 @@ setInterval(saveState, 2000);
 // ── Boot ─────────────────────────────────────────────────
 loadState();
 init();
+
+// Unlock audio on any first touch/click (iOS requires user gesture)
+function unlockAudioOnGesture() {
+  ensureAudioCtx();
+  document.removeEventListener('touchstart', unlockAudioOnGesture);
+  document.removeEventListener('click', unlockAudioOnGesture);
+}
+document.addEventListener('touchstart', unlockAudioOnGesture, { once: true });
+document.addEventListener('click', unlockAudioOnGesture, { once: true });
 </script>
 </body>
 </html>
