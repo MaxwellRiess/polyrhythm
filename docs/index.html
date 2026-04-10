@@ -404,15 +404,15 @@
   .sound-menu-dropdown {
     display: none;
     position: absolute;
-    bottom: 100%;
+    top: 100%;
     left: 0;
-    margin-bottom: 4px;
+    margin-top: 4px;
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 4px;
     min-width: 100%;
     z-index: 100;
-    box-shadow: 0 -4px 16px rgba(0,0,0,0.5);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
   }
   .sound-menu.open .sound-menu-dropdown { display: block; }
   .sound-menu-item {
@@ -1195,6 +1195,70 @@ function resetPlayback() {
   stopPlayback();
   currentPpq = 0;
   lastScheduledPpq = 0;
+
+  // Clear persisted state
+  try { localStorage.removeItem('polyrhythm_state'); } catch (e) {}
+
+  // Reset global state to defaults
+  state.bpm = 120;
+  state.swing = 0;
+  state.probability = 1;
+  state.audioEnabled = true;
+
+  state.trackA.beatCount = 4;
+  state.trackA.gate = 0.5;
+  state.trackA.soundType = 0;
+  for (let i = 0; i < MAX_BEATS; i++) {
+    state.trackA.beats[i].active = true;
+    state.trackA.beats[i].velocity = 0.8;
+    state.trackA.beats[i].note = 36;
+    state.trackA.beats[i].gate = 0.5;
+    state.trackA.beats[i].cutoff = 1.0;
+  }
+
+  state.trackB.beatCount = 3;
+  state.trackB.gate = 0.5;
+  state.trackB.soundType = 1;
+  for (let i = 0; i < MAX_BEATS; i++) {
+    state.trackB.beats[i].active = true;
+    state.trackB.beats[i].velocity = 0.8;
+    state.trackB.beats[i].note = 38;
+    state.trackB.beats[i].gate = 0.5;
+    state.trackB.beats[i].cutoff = 1.0;
+  }
+
+  // Refresh UI controls
+  updateBpmDisplay();
+  const swingSlider = document.getElementById('swingSlider');
+  swingSlider.value = 0;
+  document.getElementById('swingValue').textContent = '0%';
+  const probSlider = document.getElementById('probSlider');
+  probSlider.value = 100;
+  document.getElementById('probValue').textContent = '100%';
+  document.getElementById('trackA-gate').value = 50;
+  document.getElementById('trackB-gate').value = 50;
+  document.getElementById('audioToggleBtn').classList.toggle('active', true);
+  const swingOff = document.getElementById('swingOffBtn');
+  if (swingOff) swingOff.classList.remove('active');
+
+  // Rebuild pads to reflect new state, then refresh per-track displays
+  createBeatPads('A');
+  createBeatPads('B');
+  updateTrackBeatCount('A');
+  updateTrackBeatCount('B');
+  updateTrackNoteDisplay('A');
+  updateTrackNoteDisplay('B');
+  updateTrackSoundDisplay('A');
+  updateTrackSoundDisplay('B');
+
+  // Sync sound menu selection state
+  document.querySelectorAll('.sound-menu').forEach(menu => {
+    const trackId = menu.dataset.track;
+    const track = trackId === 'A' ? state.trackA : state.trackB;
+    menu.querySelectorAll('.sound-menu-item').forEach((it, j) =>
+      it.classList.toggle('selected', j === track.soundType));
+    menu.classList.remove('open');
+  });
 }
 
 function scheduler() {
@@ -1463,9 +1527,13 @@ function createBeatPads(trackId) {
       updateTrackNoteDisplay(trackId);
     });
 
-    // Scroll wheel on pad changes per-beat note
+    // Scroll wheel on pad changes per-beat note (throttled)
+    let lastPadWheelMs = 0;
     pad.addEventListener('wheel', (e) => {
       e.preventDefault();
+      const now = performance.now();
+      if (now - lastPadWheelMs < 100) return;
+      lastPadWheelMs = now;
       const delta = e.deltaY < 0 ? 1 : -1;
       track.beats[i].note = Math.max(0, Math.min(127, track.beats[i].note + delta));
       pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
@@ -1611,9 +1679,13 @@ function init() {
   // ── Note Scroll Selectors ──────────────────────────────────
   document.querySelectorAll('.scroll-selector').forEach(el => {
     const trackId = el.dataset.track;
+    let lastWheelMs = 0;
 
     el.addEventListener('wheel', (e) => {
       e.preventDefault();
+      const now = performance.now();
+      if (now - lastWheelMs < 100) return;
+      lastWheelMs = now;
       const delta = e.deltaY < 0 ? 1 : -1;
       shiftTrackNotes(trackId, delta);
     }, { passive: false });

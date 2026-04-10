@@ -17,6 +17,7 @@ namespace Theme
     const juce::Colour TextAccent  { 0xFFFF5500 };
     const juce::Colour Border      { 0xFF333333 };
     const juce::Colour Flash       { 0xFFFFFFFF };   // beat-fire pulse colour
+    const juce::Colour CutoffBlue  { 0xFF5588CC };
 }
 
 //==============================================================================
@@ -24,7 +25,8 @@ class BeatPadComponent : public juce::Component
 {
 public:
     BeatPadComponent (std::atomic<bool>& activeRef, std::atomic<float>& velocityRef,
-                      std::atomic<int>& noteRef, int index);
+                      std::atomic<int>& noteRef, std::atomic<float>& gateRef,
+                      std::atomic<float>& cutoffRef, int index);
 
     void paint   (juce::Graphics& g) override;
     void resized () override;
@@ -36,15 +38,25 @@ public:
     // Set flash intensity [0-1] — called by the parent track's timer
     void setFlash (float amount);
 
+    // Sync slider positions from atomic state
+    void updateGateSlider();
+    void updateCutoffSlider();
+
     std::function<void()> onChange;
 
 private:
     std::atomic<bool>&  active;
     std::atomic<float>& velocity;
     std::atomic<int>&   note;
+    std::atomic<float>& gate;
+    std::atomic<float>& cutoff;
     int   idx;
     bool  hovering    = false;
     float flashAmount = 0.0f;
+    double lastWheelMs = 0.0;
+
+    juce::Slider gateSlider;
+    juce::Slider cutoffSlider;
 
     void changeNote (int delta);
 
@@ -69,6 +81,7 @@ public:
 private:
     juce::String currentNote;
     bool hovering = false;
+    double lastWheelMs = 0.0;
     void mouseEnter (const juce::MouseEvent&) override { hovering = true;  repaint(); }
     void mouseExit  (const juce::MouseEvent&) override { hovering = false; repaint(); }
 
@@ -128,11 +141,14 @@ private:
     juce::Label          noteLabel;
     ScrollableNoteLabel  noteScroller;
 
+    // Reset notes button
+    juce::TextButton     resetNotesBtn;
+
     // Sound type selector (scroll wheel)
     juce::Label          soundLabel;
     ScrollableSoundLabel soundScroller;
 
-    // Gate slider
+    // Gate slider (track-level: sets all per-beat gates)
     juce::Label  gateLabel;
     juce::Slider gateSlider;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gateAttach;
@@ -150,6 +166,7 @@ private:
     void updateNoteLabel();
     void changeSoundType (int delta);
     void updateSoundLabel();
+    void resetNotes();
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RhythmTrackComponent)
 };
@@ -193,6 +210,9 @@ private:
 
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> swingAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> probAttach;
+
+    // Audio preview toggle
+    juce::TextButton audioToggleBtn { "AUDIO" };
 
     // Rhythm tracks
     RhythmTrackComponent trackAComp;

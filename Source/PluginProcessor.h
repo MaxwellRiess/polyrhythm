@@ -54,7 +54,7 @@ public:
     const juce::String getName() const override { return JucePlugin_Name; }
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return true; }
-    bool isMidiEffect() const override { return true; }
+    bool isMidiEffect() const override { return false; }
     double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override { return 1; }
@@ -77,10 +77,15 @@ public:
     std::array<std::atomic<int>,   MAX_BEATS> trackBNotes;
     std::array<std::atomic<float>, MAX_BEATS> trackACutoff;  // per-beat LP cutoff 0-1
     std::array<std::atomic<float>, MAX_BEATS> trackBCutoff;
+    std::array<std::atomic<float>, MAX_BEATS> trackAGate;    // per-beat gate 0-1
+    std::array<std::atomic<float>, MAX_BEATS> trackBGate;
 
     // Per-track preview sound type
     std::atomic<int> trackASoundType { (int)SoundType::Sine };
     std::atomic<int> trackBSoundType { (int)SoundType::Triangle };
+
+    // Audio preview toggle
+    std::atomic<bool> audioPreviewEnabled { true };
 
     //==========================================================================
     // Parameters (automatable)
@@ -97,6 +102,8 @@ public:
     // Shift all beats on a track by a semitone delta
     void  shiftTrackANotes (int semitones);
     void  shiftTrackBNotes (int semitones);
+    void  resetTrackANotes();
+    void  resetTrackBNotes();
     float getSwing()            const;
     float getTrackAGate()       const;
     float getTrackBGate()       const;
@@ -134,7 +141,6 @@ private:
                        double      blockEndPpq,
                        double      ppqPerSample,
                        int         numSamples,
-                       int         gateSamples,
                        juce::MidiBuffer& midiOut);
 
     juce::Random random;

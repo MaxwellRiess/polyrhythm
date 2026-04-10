@@ -12,10 +12,35 @@ static juce::Font monoFont (float size, bool bold = false)
 BeatPadComponent::BeatPadComponent (std::atomic<bool>& activeRef,
                                      std::atomic<float>& velocityRef,
                                      std::atomic<int>&   noteRef,
+                                     std::atomic<float>& gateRef,
+                                     std::atomic<float>& cutoffRef,
                                      int index)
-    : active (activeRef), velocity (velocityRef), note (noteRef), idx (index)
+    : active (activeRef), velocity (velocityRef), note (noteRef),
+      gate (gateRef), cutoff (cutoffRef), idx (index)
 {
     setRepaintsOnMouseActivity (true);
+
+    // Per-beat gate slider
+    gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    gateSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    gateSlider.setRange (0.01, 1.0, 0.01);
+    gateSlider.setValue (gate.load(), juce::dontSendNotification);
+    gateSlider.setColour (juce::Slider::trackColourId,      Theme::Accent);
+    gateSlider.setColour (juce::Slider::backgroundColourId, Theme::Border);
+    gateSlider.setColour (juce::Slider::thumbColourId,      Theme::Accent);
+    gateSlider.onValueChange = [this] { gate.store ((float) gateSlider.getValue()); };
+    addAndMakeVisible (gateSlider);
+
+    // Per-beat LP cutoff slider
+    cutoffSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    cutoffSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    cutoffSlider.setRange (0.0, 1.0, 0.01);
+    cutoffSlider.setValue (cutoff.load(), juce::dontSendNotification);
+    cutoffSlider.setColour (juce::Slider::trackColourId,      Theme::CutoffBlue);
+    cutoffSlider.setColour (juce::Slider::backgroundColourId, Theme::Border);
+    cutoffSlider.setColour (juce::Slider::thumbColourId,      Theme::CutoffBlue);
+    cutoffSlider.onValueChange = [this] { cutoff.store ((float) cutoffSlider.getValue()); };
+    addAndMakeVisible (cutoffSlider);
 }
 
 void BeatPadComponent::setFlash (float amount)
@@ -36,7 +61,7 @@ void BeatPadComponent::paint (juce::Graphics& g)
     // Orange active bar at top (height scales with velocity)
     if (isActive)
     {
-        const float barH = 6.0f + vel * (float)getHeight() * 0.35f;
+        const float barH = 6.0f + vel * (float)getHeight() * 0.15f;
         g.setColour (Theme::Accent);
         g.fillRoundedRectangle (1.0f, 1.0f, (float)getWidth() - 2.0f, barH, 3.0f);
     }
@@ -52,13 +77,22 @@ void BeatPadComponent::paint (juce::Graphics& g)
         g.fillRoundedRectangle (1.0f, 1.0f, (float)getWidth() - 2.0f, 3.0f, 2.0f);
     }
 
-    // Note name — centred between the two buttons
+    // Note name — upper portion of pad
     const juce::String noteName = juce::MidiMessage::getMidiNoteName (note.load(), true, true, 4);
     const float noteFontSize = juce::jlimit (9.0f, 15.0f, (float)getWidth() * 0.38f);
     g.setFont (monoFont (noteFontSize, true));
     g.setColour (isActive ? Theme::TextAccent : Theme::TextDim);
-    g.drawText (noteName, 2, getHeight() / 2 - 10, getWidth() - 4, 20,
+    const int noteY = (int)(getHeight() * 0.22f);
+    g.drawText (noteName, 2, noteY, getWidth() - 4, 20,
                 juce::Justification::centred, false);
+
+    // Slider labels
+    g.setFont (monoFont (7.0f));
+    g.setColour (Theme::TextDim.withAlpha (0.5f));
+    const int gateTopY = (int)(getHeight() * 0.42f);
+    g.drawText ("GATE", 0, gateTopY, getWidth(), 10, juce::Justification::centred, false);
+    const int cutoffTopY = (int)(getHeight() * 0.62f);
+    g.drawText ("LPF", 0, cutoffTopY, getWidth(), 10, juce::Justification::centred, false);
 
     // Beat index label
     g.setFont (monoFont (9.0f));
@@ -82,7 +116,11 @@ void BeatPadComponent::mouseWheelMove (const juce::MouseEvent&,
                                         const juce::MouseWheelDetails& wheel)
 {
     const int delta = wheel.deltaY > 0 ? 1 : (wheel.deltaY < 0 ? -1 : 0);
-    if (delta != 0) changeNote (delta);
+    if (delta == 0) return;
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (now - lastWheelMs < 100.0) return;
+    lastWheelMs = now;
+    changeNote (delta);
 }
 
 void BeatPadComponent::changeNote (int delta)
@@ -92,7 +130,30 @@ void BeatPadComponent::changeNote (int delta)
     repaint();
 }
 
-void BeatPadComponent::resized() {}
+void BeatPadComponent::resized()
+{
+    const int w = getWidth();
+    const int h = getHeight();
+    const int padX = 4;
+    const int sliderW = w - 2 * padX;
+    const int sliderH = 14;
+
+    const int gateY = (int)(h * 0.52f);
+    gateSlider.setBounds (padX, gateY, sliderW, sliderH);
+
+    const int cutoffY = (int)(h * 0.72f);
+    cutoffSlider.setBounds (padX, cutoffY, sliderW, sliderH);
+}
+
+void BeatPadComponent::updateGateSlider()
+{
+    gateSlider.setValue (gate.load(), juce::dontSendNotification);
+}
+
+void BeatPadComponent::updateCutoffSlider()
+{
+    cutoffSlider.setValue (cutoff.load(), juce::dontSendNotification);
+}
 
 //==============================================================================
 // ScrollableNoteLabel
@@ -138,7 +199,11 @@ void ScrollableNoteLabel::mouseWheelMove (const juce::MouseEvent&,
                                            const juce::MouseWheelDetails& wheel)
 {
     const int delta = wheel.deltaY > 0 ? 1 : (wheel.deltaY < 0 ? -1 : 0);
-    if (delta != 0 && onNoteChange) onNoteChange (delta);
+    if (delta == 0 || onNoteChange == nullptr) return;
+    const double now = juce::Time::getMillisecondCounterHiRes();
+    if (now - lastWheelMs < 100.0) return;
+    lastWheelMs = now;
+    onNoteChange (delta);
 }
 
 void ScrollableNoteLabel::mouseDown (const juce::MouseEvent& e)
@@ -245,11 +310,19 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     noteScroller.onNoteChange = [this] (int delta) { changeNote (delta); };
     addAndMakeVisible (noteScroller);
 
+    // Reset notes button
+    resetNotesBtn.setButtonText (juce::String (juce::CharPointer_UTF8 ("\xe2\x86\xba")));
+    resetNotesBtn.setColour (juce::TextButton::buttonColourId,  Theme::BeatBg);
+    resetNotesBtn.setColour (juce::TextButton::textColourOnId,  Theme::TextDim);
+    resetNotesBtn.setColour (juce::TextButton::textColourOffId, Theme::TextDim);
+    resetNotesBtn.onClick = [this] { resetNotes(); };
+    addAndMakeVisible (resetNotesBtn);
+
     // Scrollable sound type selector
     soundScroller.onSoundChange = [this] (int delta) { changeSoundType (delta); };
     addAndMakeVisible (soundScroller);
 
-    // Gate slider
+    // Gate slider (track-level: sets all per-beat gates when dragged)
     gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     gateSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
     gateSlider.setRange (0.01, 1.0, 0.01);
@@ -261,14 +334,28 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     gateAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
                  (processor.apvts, isA ? "trackA_gate" : "trackB_gate", gateSlider);
 
+    gateSlider.onValueChange = [this] {
+        if (!juce::Component::isMouseButtonDownAnywhere()) return;
+        float g = (float) gateSlider.getValue();
+        auto& gateArr = trackA ? processor.trackAGate : processor.trackBGate;
+        for (int i = 0; i < MAX_BEATS; ++i)
+        {
+            gateArr[i].store (g);
+            if (pads[i]) pads[i]->updateGateSlider();
+        }
+    };
+
     // Beat pads
-    auto& activeArr = trackA ? processor.trackAActive   : processor.trackBActive;
-    auto& velArr    = trackA ? processor.trackAVelocity : processor.trackBVelocity;
-    auto& noteArr   = trackA ? processor.trackANotes    : processor.trackBNotes;
+    auto& activeArr  = trackA ? processor.trackAActive   : processor.trackBActive;
+    auto& velArr     = trackA ? processor.trackAVelocity : processor.trackBVelocity;
+    auto& noteArr    = trackA ? processor.trackANotes    : processor.trackBNotes;
+    auto& gateArr    = trackA ? processor.trackAGate     : processor.trackBGate;
+    auto& cutoffArr  = trackA ? processor.trackACutoff   : processor.trackBCutoff;
 
     for (int i = 0; i < MAX_BEATS; ++i)
     {
-        pads[i] = std::make_unique<BeatPadComponent> (activeArr[i], velArr[i], noteArr[i], i);
+        pads[i] = std::make_unique<BeatPadComponent> (activeArr[i], velArr[i], noteArr[i],
+                                                       gateArr[i], cutoffArr[i], i);
         pads[i]->onChange = [this] { repaint(); };
         addAndMakeVisible (*pads[i]);
     }
@@ -374,6 +461,16 @@ void RhythmTrackComponent::updateSoundLabel()
     soundScroller.setSoundName (soundTypeName ((SoundType)st));
 }
 
+void RhythmTrackComponent::resetNotes()
+{
+    if (trackA)
+        processor.resetTrackANotes();
+    else
+        processor.resetTrackBNotes();
+    updateNoteLabel();
+    repaint();
+}
+
 void RhythmTrackComponent::refreshPads()
 {
     const int count = trackA ? processor.getTrackABeatCount()
@@ -415,15 +512,16 @@ void RhythmTrackComponent::resized()
     beatCountLabel.setBounds (w - 60,  beatsY + 2, 24, 20);
     incBtn.setBounds         (w - 34,  beatsY, btnH, btnH);
 
-    // Note row (scrollable)
+    // Note row (scrollable) + reset button
     const int noteY = beatsY + btnH + 8;
     const int scrollH = 36;
     noteLabel.setBounds       (12,  noteY + 8, 40, 16);
     noteScroller.setBounds    (58,  noteY,     60, scrollH);
+    resetNotesBtn.setBounds   (122, noteY + 6, btnH, btnH);
 
     // Sound type row (scrollable)
-    soundLabel.setBounds      (128, noteY + 8, 50, 16);
-    soundScroller.setBounds   (178, noteY,     60, scrollH);
+    soundLabel.setBounds      (152, noteY + 8, 50, 16);
+    soundScroller.setBounds   (202, noteY,     60, scrollH);
 
     // Gate row
     const int gateY = noteY + scrollH + 8;
@@ -477,7 +575,7 @@ PolyrhythmEditor::PolyrhythmEditor (PolyrhythmProcessor& p)
     : AudioProcessorEditor (&p), audioProcessor (p),
       trackAComp (p, true), trackBComp (p, false)
 {
-    setSize (1024, 520);
+    setSize (1024, 580);
 
     // Title
     titleLabel.setText ("POLYRHYTHM_MODULE_V1", juce::dontSendNotification);
@@ -508,6 +606,18 @@ PolyrhythmEditor::PolyrhythmEditor (PolyrhythmProcessor& p)
 
     addAndMakeVisible (swingSlider);
     addAndMakeVisible (probSlider);
+
+    // Audio preview toggle
+    audioToggleBtn.setColour (juce::TextButton::buttonColourId,   Theme::BeatBg);
+    audioToggleBtn.setColour (juce::TextButton::buttonOnColourId, Theme::Accent);
+    audioToggleBtn.setColour (juce::TextButton::textColourOnId,   Theme::TextPrimary);
+    audioToggleBtn.setColour (juce::TextButton::textColourOffId,  Theme::TextDim);
+    audioToggleBtn.setClickingTogglesState (true);
+    audioToggleBtn.setToggleState (audioProcessor.audioPreviewEnabled.load(), juce::dontSendNotification);
+    audioToggleBtn.onClick = [this] {
+        audioProcessor.audioPreviewEnabled.store (audioToggleBtn.getToggleState());
+    };
+    addAndMakeVisible (audioToggleBtn);
 
     // Track panels
     addAndMakeVisible (trackAComp);
@@ -550,8 +660,9 @@ void PolyrhythmEditor::resized()
     const int H = getHeight();
 
     // Header row
-    titleLabel.setBounds   (12,       8,  280, 28);
-    bpmValueLabel.setBounds(W - 190,  4,  80,  36);
+    titleLabel.setBounds     (12,       8,  280, 28);
+    audioToggleBtn.setBounds (300,     10,  56,  24);
+    bpmValueLabel.setBounds  (W - 190,  4,  80,  36);
     bpmUnitLabel.setBounds (W - 106,  20, 30,  16);
     swingSlider.setBounds  (W - 340,  12, 130, 20);
     probSlider.setBounds   (W - 200,  12, 80,  20);   // slight gap before BPM
