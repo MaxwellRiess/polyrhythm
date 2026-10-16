@@ -42,6 +42,7 @@ public:
     // Sync control positions from atomic state
     void updateGateSlider();
     void updateCutoffSlider();
+    void updateVelocitySlider();
     void refreshNoteDisplay();
 
     // The editor scales the whole layout with a transform, which leaves child bounds
@@ -61,6 +62,7 @@ private:
     float flashAmount = 0.0f;
     double lastWheelMs = 0.0;
 
+    juce::Slider velocitySlider;
     juce::Slider gateSlider;
     juce::Slider cutoffSlider;
 
@@ -156,6 +158,9 @@ private:
 
     std::array<std::unique_ptr<BeatPadComponent>, MAX_BEATS> pads;
 
+    // Last processor state version seen, to resync after a load or automation
+    uint32_t lastStateVersion = 0;
+
     // Flash animation state
     uint64_t lastFireCount = 0;
     float    flashAmount   = 0.0f;
@@ -198,7 +203,7 @@ public:
 
     void paint   (juce::Graphics&) override;
     void resized () override;
-    void timerCallback() override;   // updates BPM readout and MIDI device status
+    void timerCallback() override;   // BPM readout, MIDI device status, host notification
     void setUiScale (float newScale);
 
 private:
@@ -225,6 +230,8 @@ private:
     // Direct MIDI output device (e.g. an IAC bus) so any DAW track can record the output
     juce::TextButton midiOutBtn { "MIDI OUT" };
     bool             midiOutConnected = false;
+
+    uint32_t lastStateVersion = 0;
 
     void showMidiOutMenu();
     void updateMidiOutButton();

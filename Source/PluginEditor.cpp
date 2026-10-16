@@ -20,6 +20,21 @@ BeatPadComponent::BeatPadComponent (std::atomic<bool>& activeRef,
 {
     setRepaintsOnMouseActivity (true);
 
+    // Per-beat velocity slider
+    velocitySlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    velocitySlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+    velocitySlider.setRange (0.0, 1.0, 0.01);
+    velocitySlider.setValue (velocity.load(), juce::dontSendNotification);
+    velocitySlider.setColour (juce::Slider::trackColourId,      Theme::TextPrimary.withAlpha (0.7f));
+    velocitySlider.setColour (juce::Slider::backgroundColourId, Theme::Border);
+    velocitySlider.setColour (juce::Slider::thumbColourId,      Theme::TextPrimary);
+    velocitySlider.onValueChange = [this]
+    {
+        velocity.store ((float) velocitySlider.getValue());
+        if (onChange) onChange();
+    };
+    addAndMakeVisible (velocitySlider);
+
     // Per-beat gate slider
     gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     gateSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
@@ -28,7 +43,11 @@ BeatPadComponent::BeatPadComponent (std::atomic<bool>& activeRef,
     gateSlider.setColour (juce::Slider::trackColourId,      Theme::Accent);
     gateSlider.setColour (juce::Slider::backgroundColourId, Theme::Border);
     gateSlider.setColour (juce::Slider::thumbColourId,      Theme::Accent);
-    gateSlider.onValueChange = [this] { gate.store ((float) gateSlider.getValue()); };
+    gateSlider.onValueChange = [this]
+    {
+        gate.store ((float) gateSlider.getValue());
+        if (onChange) onChange();
+    };
     addAndMakeVisible (gateSlider);
 
     // Per-beat LP cutoff slider
@@ -39,7 +58,11 @@ BeatPadComponent::BeatPadComponent (std::atomic<bool>& activeRef,
     cutoffSlider.setColour (juce::Slider::trackColourId,      Theme::CutoffBlue);
     cutoffSlider.setColour (juce::Slider::backgroundColourId, Theme::Border);
     cutoffSlider.setColour (juce::Slider::thumbColourId,      Theme::CutoffBlue);
-    cutoffSlider.onValueChange = [this] { cutoff.store ((float) cutoffSlider.getValue()); };
+    cutoffSlider.onValueChange = [this]
+    {
+        cutoff.store ((float) cutoffSlider.getValue());
+        if (onChange) onChange();
+    };
     addAndMakeVisible (cutoffSlider);
 
     // Note nudge buttons — the web version has these on every pad
@@ -108,9 +131,11 @@ void BeatPadComponent::paint (juce::Graphics& g)
     {
         g.setFont (monoFont (juce::jlimit (6.0f, 9.0f, (float)getWidth() * 0.14f)));
         g.setColour (Theme::TextDim.withAlpha (0.5f));
-        g.drawText ("GATE", 0, (int)(getHeight() * 0.42f), getWidth(), 10,
+        g.drawText ("VEL",  0, (int)(getHeight() * 0.37f), getWidth(), 10,
                     juce::Justification::centred, false);
-        g.drawText ("LPF",  0, (int)(getHeight() * 0.62f), getWidth(), 10,
+        g.drawText ("GATE", 0, (int)(getHeight() * 0.53f), getWidth(), 10,
+                    juce::Justification::centred, false);
+        g.drawText ("LPF",  0, (int)(getHeight() * 0.69f), getWidth(), 10,
                     juce::Justification::centred, false);
     }
 
@@ -173,16 +198,18 @@ void BeatPadComponent::resized()
     }
 
     const bool withSliders = showSliders();
-    gateSlider.setVisible   (withSliders);
-    cutoffSlider.setVisible (withSliders);
+    velocitySlider.setVisible (withSliders);
+    gateSlider.setVisible     (withSliders);
+    cutoffSlider.setVisible   (withSliders);
 
     if (withSliders)
     {
         const int sliderW = w - 2 * padX;
-        const int sliderH = juce::jlimit (10, 16, (int)(h * 0.09f));
+        const int sliderH = juce::jlimit (10, 16, (int)(h * 0.08f));
 
-        gateSlider.setBounds   (padX, (int)(h * 0.52f), sliderW, sliderH);
-        cutoffSlider.setBounds (padX, (int)(h * 0.72f), sliderW, sliderH);
+        velocitySlider.setBounds (padX, (int)(h * 0.44f), sliderW, sliderH);
+        gateSlider.setBounds     (padX, (int)(h * 0.60f), sliderW, sliderH);
+        cutoffSlider.setBounds   (padX, (int)(h * 0.76f), sliderW, sliderH);
     }
 }
 
@@ -194,6 +221,11 @@ void BeatPadComponent::updateGateSlider()
 void BeatPadComponent::updateCutoffSlider()
 {
     cutoffSlider.setValue (cutoff.load(), juce::dontSendNotification);
+}
+
+void BeatPadComponent::updateVelocitySlider()
+{
+    velocitySlider.setValue (velocity.load(), juce::dontSendNotification);
 }
 
 void BeatPadComponent::refreshNoteDisplay()
@@ -322,7 +354,8 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     resetNotesBtn.onClick = [this] { resetNotes(); };
     addAndMakeVisible (resetNotesBtn);
 
-    // Gate slider (track-level: sets all per-beat gates when dragged)
+    // Gate slider (track-level). The processor copies this parameter into every per-beat
+    // gate, so dragging it and automating it behave the same.
     gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     gateSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
     gateSlider.setRange (0.01, 1.0, 0.01);
@@ -334,16 +367,6 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     gateAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
                  (processor.apvts, isA ? "trackA_gate" : "trackB_gate", gateSlider);
 
-    gateSlider.onValueChange = [this] {
-        if (! juce::Component::isMouseButtonDownAnywhere()) return;
-        float g = (float) gateSlider.getValue();
-        auto& gateArr = trackA ? processor.trackAGate : processor.trackBGate;
-        for (int i = 0; i < MAX_BEATS; ++i)
-        {
-            gateArr[i].store (g);
-            if (pads[i]) pads[i]->updateGateSlider();
-        }
-    };
 
     // Beat pads
     auto& activeArr  = trackA ? processor.trackAActive   : processor.trackBActive;
@@ -358,7 +381,12 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
                                                        gateArr[i], cutoffArr[i], i);
         // A per-beat note change moves the track's "all notes" readout out of sync, so
         // refresh it here rather than only on the animation timer
-        pads[i]->onChange = [this] { updateNoteLabel(); repaint(); };
+        pads[i]->onChange = [this]
+        {
+            processor.markBeatStateEdited();
+            updateNoteLabel();
+            repaint();
+        };
         addAndMakeVisible (*pads[i]);
     }
 
@@ -370,12 +398,21 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     // Initialise fire-count baseline so we don't flash on first load
     lastFireCount = trackA ? processor.trackAFireCount.load()
                            : processor.trackBFireCount.load();
+    lastStateVersion = processor.uiStateVersion.load();
 
     startTimerHz (30);   // 30 Hz animation timer
 }
 
 void RhythmTrackComponent::timerCallback()
 {
+    // A project load or automation changed something we lay out from
+    const uint32_t version = processor.uiStateVersion.load();
+    if (version != lastStateVersion)
+    {
+        lastStateVersion = version;
+        refreshAll();
+    }
+
     // Check if a new beat has fired since last tick
     const uint64_t current = trackA ? processor.trackAFireCount.load()
                                     : processor.trackBFireCount.load();
@@ -428,6 +465,7 @@ void RhythmTrackComponent::changeNote (int delta)
     else
         processor.shiftTrackBNotes (delta);
 
+    processor.markBeatStateEdited();
     updateNoteLabel();
     repaint();   // pads update their displayed note names
 }
@@ -481,6 +519,7 @@ void RhythmTrackComponent::resetNotes()
         processor.resetTrackANotes();
     else
         processor.resetTrackBNotes();
+    processor.markBeatStateEdited();
     updateNoteLabel();
     repaint();
 }
@@ -509,6 +548,7 @@ void RhythmTrackComponent::refreshAll()
     for (auto& pad : pads)
     {
         if (pad == nullptr) continue;
+        pad->updateVelocitySlider();
         pad->updateGateSlider();
         pad->updateCutoffSlider();
         pad->refreshNoteDisplay();
@@ -662,6 +702,7 @@ PolyrhythmContent::PolyrhythmContent (PolyrhythmProcessor& p)
     ccToggleBtn.setTooltip ("Send per-beat LPF as MIDI CC74. Off keeps recorded regions clean.");
     ccToggleBtn.onClick = [this] {
         audioProcessor.sendCutoffCC.store (ccToggleBtn.getToggleState());
+        audioProcessor.markBeatStateEdited();
     };
 
     // Direct MIDI output device picker
@@ -672,7 +713,8 @@ PolyrhythmContent::PolyrhythmContent (PolyrhythmProcessor& p)
     addAndMakeVisible (trackBComp);
 
     updateMidiOutButton();
-    startTimerHz (10);   // BPM readout + MIDI status
+    lastStateVersion = audioProcessor.uiStateVersion.load();
+    startTimerHz (10);   // BPM readout, MIDI status, host notification
 }
 
 PolyrhythmContent::~PolyrhythmContent() { stopTimer(); }
@@ -687,6 +729,22 @@ void PolyrhythmContent::timerCallback()
     // The device can disappear (IAC bus disabled, interface unplugged) while we're open
     if (midiOutConnected != audioProcessor.getMidiOutputIdentifier().isNotEmpty())
         updateMidiOutButton();
+
+    // A project load can change the CC74 setting and the MIDI port under us
+    const uint32_t version = audioProcessor.uiStateVersion.load();
+    if (version != lastStateVersion)
+    {
+        lastStateVersion = version;
+        ccToggleBtn.setToggleState (audioProcessor.sendCutoffCC.load(), juce::dontSendNotification);
+        updateMidiOutButton();
+    }
+
+    // Beat edits are not parameter changes, so the host has to be told separately or it
+    // may not mark the project as modified. Batched here so a slider drag is one message
+    // per tick rather than one per pixel.
+    if (audioProcessor.takeBeatStateEdited())
+        audioProcessor.updateHostDisplay (juce::AudioProcessor::ChangeDetails{}
+                                              .withNonParameterStateChanged (true));
 }
 
 void PolyrhythmContent::updateMidiOutButton()
@@ -736,6 +794,7 @@ void PolyrhythmContent::showMidiOutMenu()
                             else
                                 audioProcessor.setMidiOutputDevice (devices[result - 10].identifier);
 
+                            audioProcessor.markBeatStateEdited();
                             updateMidiOutButton();
                         });
 }
@@ -780,6 +839,7 @@ void PolyrhythmContent::resetAll()
 
     audioProcessor.sendCutoffCC.store (false);
     ccToggleBtn.setToggleState (false, juce::dontSendNotification);
+    audioProcessor.markBeatStateEdited();
 
     trackAComp.refreshAll();
     trackBComp.refreshAll();

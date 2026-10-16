@@ -21,6 +21,10 @@ PolyrhythmProcessor::PolyrhythmProcessor()
       ),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
+    for (auto* id : { "trackA_beats", "trackB_beats", "trackA_channel", "trackB_channel",
+                      "trackA_gate", "trackB_gate" })
+        apvts.addParameterListener (id, this);
+
     for (size_t i = 0; i < MAX_BEATS; ++i)
     {
         trackAActive[i]   = true;
@@ -40,6 +44,10 @@ PolyrhythmProcessor::PolyrhythmProcessor()
 
 PolyrhythmProcessor::~PolyrhythmProcessor()
 {
+    for (auto* id : { "trackA_beats", "trackB_beats", "trackA_channel", "trackB_channel",
+                      "trackA_gate", "trackB_gate" })
+        apvts.removeParameterListener (id, this);
+
     midiOutSender.stopTimer();
     setMidiOutputDevice ({});
 }
@@ -50,20 +58,43 @@ PolyrhythmProcessor::createParameterLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackA_beats",   "Track A Beats",          1,  16,  4));
-    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackB_beats",   "Track B Beats",          1,  16,  3));
+    // Version hints let hosts tell parameter sets apart if the list ever changes. Every
+    // parameter here dates from version 1; new ones should use the plugin version they ship in.
+    using PID = juce::ParameterID;
+
+    params.push_back (std::make_unique<juce::AudioParameterInt>  (PID { "trackA_beats",   1 }, "Track A Beats",          1,  16,  4));
+    params.push_back (std::make_unique<juce::AudioParameterInt>  (PID { "trackB_beats",   1 }, "Track B Beats",          1,  16,  3));
     // Track B defaults to channel 2 so the two tracks are separable downstream — the UI
     // has always shown "CH 02" for track B, but the default used to be 1 like track A,
     // so both tracks landed on the same channel.
-    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackA_channel", "Track A MIDI Channel",   1,  16,  1));
-    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackB_channel", "Track B MIDI Channel",   1,  16,  2));
+    params.push_back (std::make_unique<juce::AudioParameterInt>  (PID { "trackA_channel", 1 }, "Track A MIDI Channel",   1,  16,  1));
+    params.push_back (std::make_unique<juce::AudioParameterInt>  (PID { "trackB_channel", 1 }, "Track B MIDI Channel",   1,  16,  2));
     // Per-beat notes are stored in the beat state ValueTree, not as automatable params
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("swing",          "Swing",                  0.0f, 0.5f,  0.0f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("trackA_gate",    "Track A Gate",           0.01f, 1.0f, 0.5f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("trackB_gate",    "Track B Gate",           0.01f, 1.0f, 0.5f));
-    params.push_back (std::make_unique<juce::AudioParameterFloat>("probability",    "Probability",            0.0f,  1.0f,  1.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "swing",          1 }, "Swing",                  0.0f, 0.5f,  0.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackA_gate",    1 }, "Track A Gate",           0.01f, 1.0f, 0.5f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackB_gate",    1 }, "Track B Gate",           0.01f, 1.0f, 0.5f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "probability",    1 }, "Probability",            0.0f,  1.0f,  1.0f));
 
     return { params.begin(), params.end() };
+}
+
+//==============================================================================
+/*  Can run on the audio thread under automation, so this only stores atomics.
+
+    The track gate sets every per-beat gate on its track, whether it moves from the
+    editor or from host automation. On a project load the parameters are restored before
+    the beat tree, so saved per-beat gates still win over the track gate.
+*/
+void PolyrhythmProcessor::parameterChanged (const juce::String& parameterID, float newValue)
+{
+    if (parameterID == "trackA_gate" || parameterID == "trackB_gate")
+    {
+        auto& gates = parameterID == "trackA_gate" ? trackAGate : trackBGate;
+        for (auto& g : gates)
+            g.store (newValue);
+    }
+
+    uiStateVersion.fetch_add (1);
 }
 
 //==============================================================================
@@ -127,25 +158,42 @@ void PolyrhythmProcessor::setMidiOutputDevice (const juce::String& identifier)
 
     if (active)
     {
-        // 1 ms drain. The IAC bus adds jitter of its own, so chasing tighter than this
-        // buys nothing.
+        // 1 ms drain. Messages are held until their timestamp, so this is also the timing
+        // resolution of the external port. The IAC bus adds jitter of its own, so chasing
+        // tighter than this buys nothing.
         if (! midiOutSender.isTimerRunning())
             midiOutSender.startTimer (1);
     }
     else
     {
         midiOutSender.stopTimer();
-        drainMidiOutQueue();   // clear anything still queued
+        drainMidiOutQueue (true);   // clear anything still queued
     }
 
     previous.reset();
 }
 
 //==============================================================================
-void PolyrhythmProcessor::queueForExternalMidiOut (const juce::MidiBuffer& generated)
+void PolyrhythmProcessor::queueForExternalMidiOut (const juce::MidiBuffer& generated,
+                                                   int numSamples)
 {
-    if (! midiOutActive.load (std::memory_order_relaxed) || generated.isEmpty())
+    if (! midiOutActive.load (std::memory_order_relaxed))
+    {
+        midiClockValid = false;
         return;
+    }
+
+    // Place this block on the wall clock. Every block advances the clock, including empty
+    // ones, or the spacing between notes in different blocks would be lost.
+    const double nowMs    = juce::Time::getMillisecondCounterHiRes();
+    const double msPerSmp = 1000.0 / sampleRateVal;
+
+    if (! midiClockValid || nextBlockMs < nowMs || nextBlockMs - nowMs > maxMidiLeadMs)
+        nextBlockMs = nowMs;
+
+    midiClockValid = true;
+    const double blockStartMs = nextBlockMs;
+    nextBlockMs += juce::jmax (0, numSamples) * msPerSmp;
 
     for (const auto meta : generated)
     {
@@ -161,37 +209,57 @@ void PolyrhythmProcessor::queueForExternalMidiOut (const juce::MidiBuffer& gener
 
         auto& slot = midiOutQueue[(size_t) (size1 > 0 ? start1 : start2)];
         std::memcpy (slot.bytes, meta.data, (size_t) meta.numBytes);
-        slot.size = (juce::uint8) meta.numBytes;
+        slot.size     = (juce::uint8) meta.numBytes;
+        slot.sendAtMs = blockStartMs + meta.samplePosition * msPerSmp;
 
         midiOutFifo.finishedWrite (1);
     }
 }
 
-void PolyrhythmProcessor::drainMidiOutQueue()
+/*  Sends every queued message whose time has come. The queue is in time order, so it
+    stops at the first message that is still in the future and leaves the rest queued.
+*/
+void PolyrhythmProcessor::drainMidiOutQueue (bool discardAll)
 {
     int start1, size1, start2, size2;
     midiOutFifo.prepareToRead (midiOutFifo.getNumReady(), start1, size1, start2, size2);
+
+    if (discardAll)
+    {
+        midiOutFifo.finishedRead (size1 + size2);
+        return;
+    }
+
+    const double nowMs = juce::Time::getMillisecondCounterHiRes();
+    int sent = 0;
 
     if (size1 + size2 > 0)
     {
         const juce::ScopedLock sl (midiOutLock);
 
-        auto sendRange = [this] (int start, int size)
+        auto sendRange = [&] (int start, int size)
         {
             for (int i = 0; i < size; ++i)
             {
                 const auto& slot = midiOutQueue[(size_t) (start + i)];
 
+                if (slot.sendAtMs > nowMs)
+                    return false;
+
                 if (midiOutDevice != nullptr && slot.size > 0)
                     midiOutDevice->sendMessageNow (juce::MidiMessage (slot.bytes, (int) slot.size));
+
+                ++sent;
             }
+
+            return true;
         };
 
-        sendRange (start1, size1);
-        sendRange (start2, size2);
+        if (sendRange (start1, size1))
+            sendRange (start2, size2);
     }
 
-    midiOutFifo.finishedRead (size1 + size2);
+    midiOutFifo.finishedRead (sent);
 }
 
 juce::String PolyrhythmProcessor::getMidiOutputIdentifier() const
@@ -389,10 +457,11 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 */
 void PolyrhythmProcessor::publishGeneratedMidi (juce::MidiBuffer& hostBuffer, int numSamples)
 {
+    queueForExternalMidiOut (generatedMidi, numSamples);
+
     if (generatedMidi.isEmpty())
         return;
 
-    queueForExternalMidiOut (generatedMidi);
     hostBuffer.addEvents (generatedMidi, 0, numSamples > 0 ? numSamples : -1, 0);
 }
 
@@ -616,6 +685,8 @@ void PolyrhythmProcessor::setStateInformation (const void* data, int sizeInBytes
             setMidiOutputDevice (stillAvailable ? savedDevice : juce::String());
         }
     }
+
+    uiStateVersion.fetch_add (1);
 }
 
 //==============================================================================

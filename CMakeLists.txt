@@ -9,7 +9,7 @@ include(FetchContent)
 FetchContent_Declare(
     JUCE
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG        master      # JUCE 8+ — required for macOS 15 / Xcode 17 compatibility
+    GIT_TAG        9.0.4       # Pinned so every build uses the same JUCE. Bump deliberately.
     GIT_SHALLOW    TRUE
 )
 FetchContent_MakeAvailable(JUCE)

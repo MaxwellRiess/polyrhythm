@@ -507,6 +507,47 @@ int main()
     }
 
     //--------------------------------------------------------------------------
+    // Hosts automate the track gate parameter. It used to move only when dragged in the UI.
+    std::printf ("\nCase 11 — automating the track gate sets every beat gate\n");
+    {
+        PolyrhythmProcessor proc;
+        setParam (proc, "trackA_gate", 0.8f);
+
+        bool allSet = true;
+        for (const auto& g : proc.trackAGate)
+            allSet = allSet && std::abs (g.load() - 0.8f) < 1.0e-4f;
+
+        check (allSet, "gate: every track A beat gate follows the parameter");
+        check (std::abs (proc.trackBGate[0].load() - 0.5f) < 1.0e-4f,
+               "gate: track B is left alone");
+    }
+
+    //--------------------------------------------------------------------------
+    // Loading restores the track gate parameter, which must not flatten saved beat gates
+    std::printf ("\nCase 12 — loading keeps per-beat gates and tells the editor\n");
+    {
+        PolyrhythmProcessor source;
+        setParam (source, "trackA_gate", 0.7f);
+        source.trackAGate[1].store (0.2f);
+
+        juce::MemoryBlock saved;
+        source.getStateInformation (saved);
+
+        PolyrhythmProcessor loaded;
+        const auto versionBefore = loaded.uiStateVersion.load();
+        loaded.setStateInformation (saved.getData(), (int) saved.getSize());
+
+        check (std::abs (loaded.trackAGate[1].load() - 0.2f) < 1.0e-4f,
+               "load: an edited beat gate survives, got "
+                   + juce::String (loaded.trackAGate[1].load()));
+        check (std::abs (loaded.trackAGate[0].load() - 0.7f) < 1.0e-4f,
+               "load: other beats keep the track gate, got "
+                   + juce::String (loaded.trackAGate[0].load()));
+        check (loaded.uiStateVersion.load() != versionBefore,
+               "load: the state version moves so an open editor resyncs");
+    }
+
+    //--------------------------------------------------------------------------
     std::printf ("\n%s (%d failure%s)\n",
                  failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED",
                  failures, failures == 1 ? "" : "s");

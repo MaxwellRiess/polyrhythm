@@ -11,7 +11,8 @@ static constexpr int EDITOR_BASE_W = 1024;
 static constexpr int EDITOR_BASE_H = 580;
 
 //==============================================================================
-class PolyrhythmProcessor : public juce::AudioProcessor
+class PolyrhythmProcessor : public juce::AudioProcessor,
+                            private juce::AudioProcessorValueTreeState::Listener
 {
 public:
     PolyrhythmProcessor();
@@ -98,6 +99,15 @@ public:
     float getTrackBGate()       const;
     float getProbability()      const;
 
+    // Bumped whenever state changes from outside the editor (a project load, automation of
+    // a parameter the editor lays out from), so an open editor knows to resync
+    std::atomic<uint32_t> uiStateVersion { 0 };
+
+    // Called by the editor after it edits beat state directly. Beat state is not made of
+    // parameters, so the host is not told about it otherwise and may not offer to save.
+    void markBeatStateEdited() { beatStateEdited.store (true); }
+    bool takeBeatStateEdited() { return beatStateEdited.exchange (false); }
+
     // Transport status (written by audio thread, read by UI)
     std::atomic<bool>   transportPlaying { false };
     std::atomic<double> currentBpm       { 120.0 };
@@ -111,6 +121,10 @@ public:
 
 private:
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+    void parameterChanged (const juce::String& parameterID, float newValue) override;
+
+    std::atomic<bool> beatStateEdited { false };
 
     double sampleRateVal  = 44100.0;
     bool   wasPlaying     = false;
@@ -155,8 +169,8 @@ private:
     // Only ever fed the notes this plugin generates. Echoing the pass-through input here
     // creates a feedback loop the moment the DAW is listening to the same port: our own
     // output returns as input and is sent straight back out again.
-    void queueForExternalMidiOut (const juce::MidiBuffer& generated);
-    void drainMidiOutQueue();
+    void queueForExternalMidiOut (const juce::MidiBuffer& generated, int numSamples);
+    void drainMidiOutQueue (bool discardAll = false);
     void publishGeneratedMidi (juce::MidiBuffer& hostBuffer, int numSamples);
 
     // Everything generated this block, kept separate from the host's buffer so the two
@@ -184,8 +198,18 @@ private:
     struct QueuedMidi
     {
         juce::uint8 bytes[3] {};
-        juce::uint8 size = 0;
+        juce::uint8 size     = 0;
+        double      sendAtMs = 0.0;   // Time::getMillisecondCounterHiRes() clock
     };
+
+    /*  Wall-clock time of the start of the next block, for timestamping queued messages.
+        Advances by each block's duration rather than reading the clock every block, so
+        notes keep their spacing when the host processes blocks in bursts. Resynced to
+        the clock if it falls behind or runs too far ahead. Audio thread only.
+    */
+    double nextBlockMs     = 0.0;
+    bool   midiClockValid  = false;
+    static constexpr double maxMidiLeadMs = 500.0;
 
     static constexpr int midiOutQueueSize = 2048;
     juce::AbstractFifo                      midiOutFifo { midiOutQueueSize };

@@ -59,7 +59,7 @@ It's a single self-contained `index.html` file with no external dependencies (be
 
 - CMake 3.22+
 - C++17 compiler (Clang, GCC, or MSVC)
-- JUCE 8+ (fetched automatically on first build)
+- JUCE 9.0.4 (fetched automatically on first build)
 
 ### Build
 
@@ -92,6 +92,7 @@ Both builds auto-install to `~/Library/Audio/Plug-Ins/` on macOS. Look for **Pol
 | **SWING** | Offset for odd-numbered beats (0-50%) | Both |
 | **PROB** | Probability each beat fires (0-100%) | Both |
 | **LPF** | Per-beat low-pass brightness | Both |
+| **VEL** | Per-beat velocity | Plugin |
 | **SOUND** | Preview sound type — Sine, Tri, Sqr, Saw, Click, Noise | Web |
 | **CH nn** | MIDI output channel for the track — click to change | Plugin |
 | **CC74** | Send the per-beat LPF value as MIDI CC74 | Plugin |
