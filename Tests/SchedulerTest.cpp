@@ -548,6 +548,57 @@ int main()
     }
 
     //--------------------------------------------------------------------------
+    // Track velocity and LPF behave like the track gate
+    std::printf ("\nCase 13: track velocity and LPF set every beat on their track\n");
+    {
+        PolyrhythmProcessor proc;
+        setParam (proc, "trackA_velocity", 0.3f);
+        setParam (proc, "trackB_lpf",      0.25f);
+
+        bool velSet = true, lpfSet = true;
+        for (const auto& v : proc.trackAVelocity) velSet = velSet && std::abs (v.load() - 0.3f)  < 1.0e-4f;
+        for (const auto& c : proc.trackBCutoff)   lpfSet = lpfSet && std::abs (c.load() - 0.25f) < 1.0e-4f;
+
+        check (velSet, "velocity: every track A beat velocity follows the parameter");
+        check (lpfSet, "lpf: every track B beat cutoff follows the parameter");
+        check (std::abs (proc.trackBVelocity[0].load() - 0.8f) < 1.0e-4f,
+               "velocity: track B is left alone");
+        check (std::abs (proc.trackACutoff[0].load() - 1.0f) < 1.0e-4f,
+               "lpf: track A is left alone");
+    }
+
+    //--------------------------------------------------------------------------
+    std::printf ("\nCase 14: scale lock snaps, steps by degree and is saved\n");
+    {
+        PolyrhythmProcessor proc;
+        proc.scaleRoot.store (5);   // F
+        proc.scaleType.store (3);   // Phrygian: F Gb Ab Bb C Db Eb
+
+        check (proc.stepNote (40, 1) == 41, "unlocked: steps are semitones");
+
+        proc.scaleEnabled.store (true);
+        check (proc.snapToScale (40) == 39, "snap: E ties between Eb and F and goes down to Eb");
+        check (proc.snapToScale (36) == 36, "snap: C is in F Phrygian and stays");
+        check (proc.stepNote (36, 1) == 37, "step: C up one degree is Db");
+        check (proc.stepNote (37, 1) == 39, "step: Db up one degree is Eb, skipping D");
+        check (proc.stepNote (41, -2) == 37, "step: F down two degrees is Db");
+        check (proc.stepNote (127, 1) == 127, "step: stays put with no scale note above");
+
+        proc.trackANotes[0].store (40);
+        proc.trackBNotes[0].store (38);   // D, not in the scale
+        proc.snapAllNotesToScale();
+        check (proc.trackANotes[0].load() == 39 && proc.trackBNotes[0].load() == 37,
+               "snap all: both tracks move into the scale");
+
+        juce::MemoryBlock saved;
+        proc.getStateInformation (saved);
+        PolyrhythmProcessor loaded;
+        loaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        check (loaded.scaleEnabled.load() && loaded.scaleRoot.load() == 5 && loaded.scaleType.load() == 3,
+               "load: scale lock, root and type are restored");
+    }
+
+    //--------------------------------------------------------------------------
     std::printf ("\n%s (%d failure%s)\n",
                  failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED",
                  failures, failures == 1 ? "" : "s");

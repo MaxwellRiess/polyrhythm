@@ -7,6 +7,36 @@ static juce::Font monoFont (float size, bool bold = false)
 }
 
 //==============================================================================
+// NudgeButton
+//==============================================================================
+NudgeButton::NudgeButton (bool isPlus)
+    : juce::Button (isPlus ? "+" : "-"), plus (isPlus)
+{
+    setRepaintsOnMouseActivity (true);
+}
+
+void NudgeButton::paintButton (juce::Graphics& g, bool highlighted, bool down)
+{
+    auto bounds = getLocalBounds().toFloat().reduced (0.5f);
+
+    g.setColour (down ? Theme::PanelDark : (highlighted ? Theme::BeatBgHover : Theme::PanelDark.brighter (0.05f)));
+    g.fillRoundedRectangle (bounds, 3.0f);
+
+    g.setColour (highlighted ? Theme::Accent : Theme::Border);
+    g.drawRoundedRectangle (bounds, 3.0f, 1.0f);
+
+    // Glyph: a square stroke box a third of the button, centred
+    const float size   = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.36f;
+    const float stroke = juce::jmax (1.2f, size * 0.2f);
+    const auto  c      = bounds.getCentre();
+
+    g.setColour (highlighted ? Theme::Accent : Theme::TextPrimary.withAlpha (0.85f));
+    g.fillRoundedRectangle (c.x - size / 2.0f, c.y - stroke / 2.0f, size, stroke, stroke / 2.0f);
+    if (plus)
+        g.fillRoundedRectangle (c.x - stroke / 2.0f, c.y - size / 2.0f, stroke, size, stroke / 2.0f);
+}
+
+//==============================================================================
 // BeatPadComponent
 //==============================================================================
 BeatPadComponent::BeatPadComponent (std::atomic<bool>& activeRef,
@@ -66,13 +96,8 @@ BeatPadComponent::BeatPadComponent (std::atomic<bool>& activeRef,
     addAndMakeVisible (cutoffSlider);
 
     // Note nudge buttons — the web version has these on every pad
-    for (auto* b : { &noteDownBtn, &noteUpBtn })
-    {
-        b->setColour (juce::TextButton::buttonColourId,  Theme::Border);
-        b->setColour (juce::TextButton::textColourOnId,  Theme::TextPrimary);
-        b->setColour (juce::TextButton::textColourOffId, Theme::TextPrimary);
-        addAndMakeVisible (*b);
-    }
+    addAndMakeVisible (noteDownBtn);
+    addAndMakeVisible (noteUpBtn);
 
     noteDownBtn.onClick = [this] { changeNote (-1); };
     noteUpBtn.onClick   = [this] { changeNote (+1); };
@@ -170,7 +195,8 @@ void BeatPadComponent::mouseWheelMove (const juce::MouseEvent&,
 
 void BeatPadComponent::changeNote (int delta)
 {
-    note.store (juce::jlimit (0, 127, note.load() + delta));
+    note.store (stepNote ? stepNote (note.load(), delta)
+                         : juce::jlimit (0, 127, note.load() + delta));
     if (onChange) onChange();
     repaint();
 }
@@ -294,11 +320,31 @@ void ScrollableNoteLabel::mouseWheelMove (const juce::MouseEvent&,
     onNoteChange (delta);
 }
 
-void ScrollableNoteLabel::mouseDown (const juce::MouseEvent& e)
+void ScrollableNoteLabel::mouseDown (const juce::MouseEvent&)
 {
-    // Click top half = up, bottom half = down
-    const int delta = e.y < getHeight() / 2 ? 1 : -1;
-    if (onNoteChange) onNoteChange (delta);
+    dragSteps = 0;
+    dragged   = false;
+}
+
+void ScrollableNoteLabel::mouseDrag (const juce::MouseEvent& e)
+{
+    // Up is positive. Each pxPerStep of travel from the press point is one step.
+    const int target = -e.getDistanceFromDragStartY() / pxPerStep;
+
+    if (target != dragSteps)
+    {
+        if (onNoteChange) onNoteChange (target - dragSteps);
+        dragSteps = target;
+        dragged   = true;
+    }
+}
+
+void ScrollableNoteLabel::mouseUp (const juce::MouseEvent& e)
+{
+    // A plain click: top half = up, bottom half = down. Ignored after a drag so the
+    // release doesn't add an extra step.
+    if (! dragged && ! e.mouseWasDraggedSinceMouseDown() && onNoteChange)
+        onNoteChange (e.y < getHeight() / 2 ? 1 : -1);
 }
 
 //==============================================================================
@@ -322,6 +368,8 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     makeLabel (beatCountLabel, "4",                            14.0f, Theme::TextPrimary, true);
     makeLabel (noteLabel,      "NOTE",                         10.0f, Theme::TextDim);
     makeLabel (gateLabel,      "GATE",                         10.0f, Theme::TextDim);
+    makeLabel (velLabel,       "VEL",                          10.0f, Theme::TextDim);
+    makeLabel (lpfLabel,       "LPF",                          10.0f, Theme::TextDim);
 
     // Channel selector — shows the actual parameter value rather than a hardcoded badge
     channelBtn.setColour (juce::TextButton::buttonColourId,  Theme::Accent);
@@ -330,15 +378,8 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     channelBtn.onClick = [this] { showChannelMenu(); };
     addAndMakeVisible (channelBtn);
 
-    auto styleBtn = [this] (juce::TextButton& btn)
-    {
-        btn.setColour (juce::TextButton::buttonColourId,  Theme::BeatBg);
-        btn.setColour (juce::TextButton::textColourOnId,  Theme::TextPrimary);
-        btn.setColour (juce::TextButton::textColourOffId, Theme::TextPrimary);
-        addAndMakeVisible (btn);
-    };
-
-    styleBtn (decBtn);    styleBtn (incBtn);
+    addAndMakeVisible (decBtn);
+    addAndMakeVisible (incBtn);
     decBtn.onClick    = [this] { changeBeatCount (-1); };
     incBtn.onClick    = [this] { changeBeatCount (+1); };
 
@@ -354,18 +395,28 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     resetNotesBtn.onClick = [this] { resetNotes(); };
     addAndMakeVisible (resetNotesBtn);
 
-    // Gate slider (track-level). The processor copies this parameter into every per-beat
-    // gate, so dragging it and automating it behave the same.
-    gateSlider.setSliderStyle (juce::Slider::LinearHorizontal);
-    gateSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
-    gateSlider.setRange (0.01, 1.0, 0.01);
-    gateSlider.setColour (juce::Slider::trackColourId,      Theme::Accent);
-    gateSlider.setColour (juce::Slider::backgroundColourId, Theme::Border);
-    gateSlider.setColour (juce::Slider::thumbColourId,      Theme::Accent);
-    addAndMakeVisible (gateSlider);
+    // Gate, velocity and LPF sliders (track-level). The processor copies each parameter
+    // into every per-beat value, so dragging and automating behave the same. Colours match
+    // the per-beat sliders on the pads.
+    auto setUpTrackSlider = [this] (juce::Slider& slider, juce::Colour fill, juce::Colour thumb,
+                                    const juce::String& paramId,
+                                    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& attach)
+    {
+        slider.setSliderStyle (juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
+        slider.setColour (juce::Slider::trackColourId,      fill);
+        slider.setColour (juce::Slider::backgroundColourId, Theme::Border);
+        slider.setColour (juce::Slider::thumbColourId,      thumb);
+        addAndMakeVisible (slider);
+        attach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
+                 (processor.apvts, paramId, slider);
+    };
 
-    gateAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>
-                 (processor.apvts, isA ? "trackA_gate" : "trackB_gate", gateSlider);
+    const juce::String prefix = isA ? "trackA_" : "trackB_";
+    setUpTrackSlider (gateSlider, Theme::Accent, Theme::Accent, prefix + "gate", gateAttach);
+    setUpTrackSlider (velSlider,  Theme::TextPrimary.withAlpha (0.7f), Theme::TextPrimary,
+                      prefix + "velocity", velAttach);
+    setUpTrackSlider (lpfSlider,  Theme::CutoffBlue, Theme::CutoffBlue, prefix + "lpf", lpfAttach);
 
 
     // Beat pads
@@ -387,6 +438,7 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
             updateNoteLabel();
             repaint();
         };
+        pads[i]->stepNote = [this] (int n, int delta) { return processor.stepNote (n, delta); };
         addAndMakeVisible (*pads[i]);
     }
 
@@ -585,27 +637,35 @@ void RhythmTrackComponent::resized()
     trackNameLabel.setBounds (12, 8,     180, 20);
     channelBtn.setBounds     (w - 66, 8, 58,  20);
 
-    // Beats row
+    // Left column: beats row, then note row (scrollable) + reset button
     const int beatsY = 46;
-    beatsLabel.setBounds     (12,      beatsY + 4, 50, 16);
-    decBtn.setBounds         (w - 86,  beatsY, btnH, btnH);
-    beatCountLabel.setBounds (w - 60,  beatsY + 2, 24, 20);
-    incBtn.setBounds         (w - 34,  beatsY, btnH, btnH);
+    beatsLabel.setBounds     (12,  beatsY + 4, 44, 16);
+    decBtn.setBounds         (58,  beatsY, btnH, btnH);
+    beatCountLabel.setBounds (84,  beatsY + 2, 24, 20);
+    incBtn.setBounds         (110, beatsY, btnH, btnH);
 
-    // Note row (scrollable) + reset button
     const int noteY = beatsY + btnH + 8;
     const int scrollH = 36;
     noteLabel.setBounds       (12,  noteY + 8, 40, 16);
     noteScroller.setBounds    (58,  noteY,     60, scrollH);
     resetNotesBtn.setBounds   (122, noteY + 6, btnH, btnH);
 
-    // Gate row
-    const int gateY = noteY + scrollH + 8;
-    gateLabel.setBounds  (12, gateY + 4, 40,       16);
-    gateSlider.setBounds (56, gateY,     w - 68,   btnH);
+    // Right column: GATE, VEL and LPF stacked beside the beats and note rows
+    const int colX   = 164;
+    const int rowH   = 22;
+    const int labelW = 36;
+    int rowY = beatsY;
+    for (auto [label, slider] : { std::pair { &gateLabel, &gateSlider },
+                                  std::pair { &velLabel,  &velSlider  },
+                                  std::pair { &lpfLabel,  &lpfSlider  } })
+    {
+        label->setBounds  (colX,          rowY + 3, labelW,                 16);
+        slider->setBounds (colX + labelW, rowY,     w - colX - labelW - 12, rowH);
+        rowY += rowH + 2;
+    }
 
     // Beat pads — fill remaining height
-    const int padAreaY = gateY + btnH + 12;
+    const int padAreaY = juce::jmax (noteY + scrollH, rowY) + 12;
     const int padAreaH = H - padAreaY - 10;
     const int count    = trackA ? processor.getTrackABeatCount()
                                 : processor.getTrackBBeatCount();
@@ -691,6 +751,32 @@ PolyrhythmContent::PolyrhythmContent (PolyrhythmProcessor& p)
         addAndMakeVisible (btn);
     };
 
+    // Scale lock
+    styleHeaderBtn (scaleBtn);
+    scaleBtn.setClickingTogglesState (true);
+    scaleBtn.setTooltip ("Lock every note to the chosen scale. Turning it off keeps the notes.");
+    scaleBtn.onClick = [this] { applyScaleFromUi(); };
+
+    for (auto* box : { &scaleRootBox, &scaleTypeBox })
+    {
+        box->setColour (juce::ComboBox::backgroundColourId, Theme::BeatBg);
+        box->setColour (juce::ComboBox::textColourId,       Theme::TextPrimary);
+        box->setColour (juce::ComboBox::outlineColourId,    Theme::Border);
+        box->setColour (juce::ComboBox::arrowColourId,      Theme::TextDim);
+        box->onChange = [this] { applyScaleFromUi(); };
+        addAndMakeVisible (*box);
+    }
+
+    const juce::StringArray noteNames { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    for (int i = 0; i < noteNames.size(); ++i)
+        scaleRootBox.addItem (noteNames[i], i + 1);
+
+    const auto& scales = PolyrhythmProcessor::getScales();
+    for (int i = 0; i < (int) scales.size(); ++i)
+        scaleTypeBox.addItem (scales[(size_t) i].name, i + 1);
+
+    updateScaleControls();
+
     // Global reset, matching the web version's RESET button
     styleHeaderBtn (resetAllBtn);
     resetAllBtn.onClick = [this] { resetAll(); };
@@ -736,6 +822,7 @@ void PolyrhythmContent::timerCallback()
     {
         lastStateVersion = version;
         ccToggleBtn.setToggleState (audioProcessor.sendCutoffCC.load(), juce::dontSendNotification);
+        updateScaleControls();
         updateMidiOutButton();
     }
 
@@ -799,6 +886,33 @@ void PolyrhythmContent::showMidiOutMenu()
                         });
 }
 
+void PolyrhythmContent::applyScaleFromUi()
+{
+    audioProcessor.scaleEnabled.store (scaleBtn.getToggleState());
+    audioProcessor.scaleRoot.store (juce::jmax (0, scaleRootBox.getSelectedId() - 1));
+    audioProcessor.scaleType.store (juce::jmax (0, scaleTypeBox.getSelectedId() - 1));
+
+    // Turning the lock on, or changing key while it is on, snaps every note into the scale
+    audioProcessor.snapAllNotesToScale();
+    audioProcessor.markBeatStateEdited();
+
+    updateScaleControls();
+    trackAComp.refreshAll();
+    trackBComp.refreshAll();
+}
+
+void PolyrhythmContent::updateScaleControls()
+{
+    const bool on = audioProcessor.scaleEnabled.load();
+    scaleBtn.setToggleState (on, juce::dontSendNotification);
+    scaleRootBox.setSelectedId (audioProcessor.scaleRoot.load() + 1, juce::dontSendNotification);
+    scaleTypeBox.setSelectedId (audioProcessor.scaleType.load() + 1, juce::dontSendNotification);
+
+    // Dim the key while the lock is off, as the web version does
+    for (auto* box : { &scaleRootBox, &scaleTypeBox })
+        box->setColour (juce::ComboBox::textColourId, on ? Theme::TextPrimary : Theme::TextDim);
+}
+
 void PolyrhythmContent::setUiScale (float newScale)
 {
     trackAComp.setUiScale (newScale);
@@ -820,7 +934,17 @@ void PolyrhythmContent::resetAll()
     setParam ("swing",          0.0f);
     setParam ("trackA_gate",    0.5f);
     setParam ("trackB_gate",    0.5f);
+    setParam ("trackA_velocity", 0.8f);
+    setParam ("trackB_velocity", 0.8f);
+    setParam ("trackA_lpf",     1.0f);
+    setParam ("trackB_lpf",     1.0f);
     setParam ("probability",    1.0f);
+
+    // Scale lock off before the notes reset, so they land on the plain defaults
+    audioProcessor.scaleEnabled.store (false);
+    audioProcessor.scaleRoot.store (0);
+    audioProcessor.scaleType.store (0);
+    updateScaleControls();
 
     for (int i = 0; i < MAX_BEATS; ++i)
     {
@@ -862,9 +986,13 @@ void PolyrhythmContent::paint (juce::Graphics& g)
     g.setColour (midiOutConnected ? Theme::MidiGreen : Theme::Border);
     g.fillEllipse ((float) midiOutBtn.getX() - 12.0f, 18.0f, 8.0f, 8.0f);
 
+    // Second header row (scale, swing, prob)
+    g.setColour (Theme::Border);
+    g.drawLine (0, (float) toolbarBottom, (float) W, (float) toolbarBottom, 1.0f);
+
     // Vertical divider between tracks
     g.setColour (Theme::Accent);
-    g.fillRect (W / 2 - 1, 50, 2, H - 54);
+    g.fillRect (W / 2 - 1, toolbarBottom + 6, 2, H - toolbarBottom - 10);
 }
 
 void PolyrhythmContent::resized()
@@ -883,12 +1011,20 @@ void PolyrhythmContent::resized()
     int right = W - 12;
 
     bpmUnitLabel.setBounds  (right - 32, 20, 32, 16);   right -= 32 + 4;
-    bpmValueLabel.setBounds (right - 74,  4, 74, 36);   right -= 74 + 18;
-    probSlider.setBounds    (right - 150, 12, 150, 20); right -= 150 + 14;
-    swingSlider.setBounds   (right - 170, 12, 170, 20);
+    bpmValueLabel.setBounds (right - 74,  4, 74, 36);
 
-    // Track panels — fill everything below the header
-    const int trackY = 50;
+    // Second row: scale lock on the left, SWING and PROB on the right
+    const int rowY = 50;
+    scaleBtn.setBounds     (12,  rowY, 56,  22);
+    scaleRootBox.setBounds (74,  rowY, 56,  22);
+    scaleTypeBox.setBounds (136, rowY, 160, 22);
+
+    right = W - 12;
+    probSlider.setBounds  (right - 200, rowY + 1, 200, 20); right -= 200 + 24;
+    swingSlider.setBounds (right - 200, rowY + 1, 200, 20);
+
+    // Track panels fill everything below the header rows
+    const int trackY = toolbarBottom + 6;
     const int trackH = H - trackY - 4;
     const int halfW  = W / 2 - 2;
     trackAComp.setBounds (2,          trackY, halfW, trackH);

@@ -22,6 +22,20 @@ namespace Theme
 }
 
 //==============================================================================
+// Flat +/- button drawn to match the web version's dark square note buttons. The glyph is
+// drawn as two strokes rather than text, so it stays centred and crisp at any UI scale.
+class NudgeButton : public juce::Button
+{
+public:
+    explicit NudgeButton (bool isPlus);
+    void paintButton (juce::Graphics&, bool highlighted, bool down) override;
+
+private:
+    bool plus;
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NudgeButton)
+};
+
+//==============================================================================
 class BeatPadComponent : public juce::Component
 {
 public:
@@ -51,6 +65,9 @@ public:
 
     std::function<void()> onChange;
 
+    // Moves a note by one step. Set by the track so the pad follows the scale lock.
+    std::function<int (int note, int delta)> stepNote;
+
 private:
     std::atomic<bool>&  active;
     std::atomic<float>& velocity;
@@ -68,8 +85,8 @@ private:
 
     // Per-beat note nudge, matching the web version's pads. Hidden when the pad is too
     // narrow to draw them legibly (high beat counts in a small window).
-    juce::TextButton noteDownBtn { "-" };
-    juce::TextButton noteUpBtn   { "+" };
+    NudgeButton noteDownBtn { false };
+    NudgeButton noteUpBtn   { true };
 
     float uiScale = 1.0f;
 
@@ -90,7 +107,8 @@ private:
 };
 
 //==============================================================================
-// Scrollable label — responds to mouse wheel and clicks to change a value
+// Scrollable label: wheel, click (top half up, bottom half down) or click and drag up or
+// down to change a value
 class ScrollableNoteLabel : public juce::Component
 {
 public:
@@ -99,6 +117,8 @@ public:
     void paint (juce::Graphics& g) override;
     void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
     void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp   (const juce::MouseEvent&) override;
 
     std::function<void(int delta)> onNoteChange;
 
@@ -108,6 +128,11 @@ private:
     juce::String currentNote;
     bool hovering = false;
     double lastWheelMs = 0.0;
+
+    // Drag state: steps already applied in this drag, and whether it moved at all
+    static constexpr int pxPerStep = 10;
+    int  dragSteps = 0;
+    bool dragged   = false;
     void mouseEnter (const juce::MouseEvent&) override { hovering = true;  repaint(); }
     void mouseExit  (const juce::MouseEvent&) override { hovering = false; repaint(); }
 
@@ -141,8 +166,8 @@ private:
     // Beats control
     juce::Label      beatsLabel;
     juce::Label      beatCountLabel;
-    juce::TextButton decBtn { "-" };
-    juce::TextButton incBtn { "+" };
+    NudgeButton      decBtn { false };
+    NudgeButton      incBtn { true };
 
     // Note selector (scroll wheel)
     juce::Label          noteLabel;
@@ -155,6 +180,14 @@ private:
     juce::Label  gateLabel;
     juce::Slider gateSlider;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gateAttach;
+
+    // Velocity and LPF sliders (track-level: set all per-beat values, like gate)
+    juce::Label  velLabel;
+    juce::Slider velSlider;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> velAttach;
+    juce::Label  lpfLabel;
+    juce::Slider lpfSlider;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> lpfAttach;
 
     std::array<std::unique_ptr<BeatPadComponent>, MAX_BEATS> pads;
 
@@ -221,6 +254,13 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> swingAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> probAttach;
 
+    // Scale lock, shared by both tracks
+    juce::TextButton scaleBtn { "SCALE" };
+    juce::ComboBox   scaleRootBox;
+    juce::ComboBox   scaleTypeBox;
+    void applyScaleFromUi();
+    void updateScaleControls();
+
     // Reset everything to defaults, like the web version's RESET transport button
     juce::TextButton resetAllBtn { "RESET" };
 
@@ -232,6 +272,9 @@ private:
     bool             midiOutConnected = false;
 
     uint32_t lastStateVersion = 0;
+
+    // Bottom edge of the second header row
+    static constexpr int toolbarBottom = 78;
 
     void showMidiOutMenu();
     void updateMidiOutButton();
