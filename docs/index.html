@@ -556,10 +556,51 @@
   }
   .beat-pad.active .pad-note-name { color: var(--text-accent); }
 
+  .pad-vel {
+    width: 85%;
+    z-index: 1;
+    margin: 2px 0 0 0;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    touch-action: none;
+  }
+  .pad-vel::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 8px;
+    height: 8px;
+    background: #999999;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .pad-vel::-moz-range-thumb {
+    width: 8px;
+    height: 8px;
+    background: #999999;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+  .beat-pad.active .pad-vel::-webkit-slider-thumb { background: #EEEEEE; }
+  .beat-pad.active .pad-vel::-moz-range-thumb { background: #EEEEEE; }
+
+  .pad-vel-label {
+    font-size: 7px;
+    color: var(--text-dim);
+    opacity: 0.5;
+    z-index: 1;
+    margin: 6px 0 -2px 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
   .pad-gate {
     width: 85%;
     z-index: 1;
-    margin: 10px 0 0 0;
+    margin: 2px 0 0 0;
     -webkit-appearance: none;
     appearance: none;
     height: 3px;
@@ -592,7 +633,7 @@
     color: var(--text-dim);
     opacity: 0.5;
     z-index: 1;
-    margin: 6px 0 -2px 0;
+    margin: 4px 0 -2px 0;
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
@@ -799,7 +840,7 @@
       min-width: 60px;
       max-width: calc(50% - 6px);
       min-height: 170px;
-      padding: 8px 2px;
+      padding: 8px 2px 20px 2px;
     }
 
     .pad-note-btn {
@@ -813,8 +854,21 @@
     .pad-note-row {
       margin: 6px 0;
     }
+    .pad-vel {
+      margin: 8px 0 0 0;
+      height: 6px;
+    }
+    .pad-vel::-webkit-slider-thumb {
+      width: 18px;
+      height: 18px;
+    }
+    .pad-vel::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+    }
+    .pad-vel-label { font-size: 8px; margin: 10px 0 -1px 0; }
     .pad-gate {
-      margin: 12px 0 0 0;
+      margin: 8px 0 0 0;
       height: 6px;
     }
     .pad-gate::-webkit-slider-thumb {
@@ -825,9 +879,9 @@
       width: 18px;
       height: 18px;
     }
-    .pad-gate-label { font-size: 8px; margin: 8px 0 -1px 0; }
+    .pad-gate-label { font-size: 8px; margin: 14px 0 -1px 0; }
     .pad-cutoff {
-      margin: 4px 0 0 0;
+      margin: 8px 0 0 0;
       height: 6px;
     }
     .pad-cutoff::-webkit-slider-thumb {
@@ -838,7 +892,7 @@
       width: 18px;
       height: 18px;
     }
-    .pad-cutoff-label { font-size: 8px; margin: 6px 0 -1px 0; }
+    .pad-cutoff-label { font-size: 8px; margin: 14px 0 -1px 0; }
     .pad-index { font-size: 8px; bottom: 2px; }
 
     /* Footer */
@@ -1497,6 +1551,8 @@ function createBeatPads(trackId) {
         <span class="pad-note-name">${midiNoteName(track.beats[i].note)}</span>
         <button class="pad-note-btn" data-action="note-up">+</button>
       </div>
+      <span class="pad-vel-label">vel</span>
+      <input type="range" class="pad-vel" min="1" max="127" value="${Math.round((track.beats[i].velocity ?? 0.8) * 127)}" title="Velocity">
       <span class="pad-gate-label">gate</span>
       <input type="range" class="pad-gate" min="1" max="100" value="${Math.round(track.beats[i].gate * 100)}" title="Gate">
       <span class="pad-cutoff-label">lpf</span>
@@ -1507,6 +1563,7 @@ function createBeatPads(trackId) {
     // Toggle active on pad click (but not on buttons or sliders)
     pad.addEventListener('click', (e) => {
       if (e.target.classList.contains('pad-note-btn')) return;
+      if (e.target.classList.contains('pad-vel')) return;
       if (e.target.classList.contains('pad-gate')) return;
       if (e.target.classList.contains('pad-cutoff')) return;
       track.beats[i].active = !track.beats[i].active;
@@ -1539,6 +1596,16 @@ function createBeatPads(trackId) {
       pad.querySelector('.pad-note-name').textContent = midiNoteName(track.beats[i].note);
       updateTrackNoteDisplay(trackId);
     }, { passive: false });
+
+    // Per-beat velocity slider (MIDI 1-127)
+    const velInput = pad.querySelector('.pad-vel');
+    velInput.addEventListener('input', (e) => {
+      e.stopPropagation();
+      track.beats[i].velocity = e.target.value / 127;
+    });
+    velInput.addEventListener('click', (e) => e.stopPropagation());
+    velInput.addEventListener('mousedown', (e) => e.stopPropagation());
+    velInput.addEventListener('touchstart', (e) => e.stopPropagation());
 
     // Per-beat gate slider
     const gateInput = pad.querySelector('.pad-gate');

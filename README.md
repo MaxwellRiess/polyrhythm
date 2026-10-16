@@ -11,7 +11,7 @@ A polyrhythm MIDI generator available as a **JUCE audio plugin** (AU/VST3) and a
 ## Features
 
 - **Two independent rhythm tracks** (RHYTHM_A / RHYTHM_B) with 1-16 beats each
-- **Per-beat controls** — toggle active state, set individual MIDI notes and gate lengths
+- **Per-beat controls** — toggle active state, set individual MIDI notes, velocities and gate lengths
 - **Global note selector** — scroll wheel / touch swipe to shift all beats on a track by semitone
 - **6 built-in sound types per track** — Sine, Triangle, Square, Saw, Click, and Noise for distinct tone colors
 - **Swing** — pushes odd-numbered beats forward for groove
