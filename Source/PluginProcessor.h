@@ -141,6 +141,7 @@ private:
 
     void processTrack (bool        isTrackA,
                        double      barLengthPpq,
+                       double      barAnchorPpq,
                        double      windowStartPpq,
                        double      windowEndPpq,
                        double      blockStartPpq,

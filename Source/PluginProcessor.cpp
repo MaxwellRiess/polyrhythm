@@ -321,6 +321,12 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
     const double barLengthPpq = (4.0 * numerator) / denominator;
 
+    // Any bar line the host reports. Bars are laid out from here rather than from PPQ zero,
+    // which is only a bar line until a pickup bar or a time signature change moves the grid.
+    double barAnchorPpq = 0.0;
+    if (auto barStartOpt = posOpt->getPpqPositionOfLastBarStart())
+        barAnchorPpq = *barStartOpt;
+
     // Work out the PPQ window to search for beats. Continuing from where the last block
     // finished closes the gaps and overlaps between host-reported block positions; a gap
     // would drop beats and an overlap would fire them twice.
@@ -365,10 +371,10 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
     if (numSamples > 0 && blockEndPpq > windowStartPpq)
     {
-        processTrack (true,  barLengthPpq, windowStartPpq, blockEndPpq, blockStartPpq,
-                      ppqPerSample, numSamples, generatedMidi);
-        processTrack (false, barLengthPpq, windowStartPpq, blockEndPpq, blockStartPpq,
-                      ppqPerSample, numSamples, generatedMidi);
+        processTrack (true,  barLengthPpq, barAnchorPpq, windowStartPpq, blockEndPpq,
+                      blockStartPpq, ppqPerSample, numSamples, generatedMidi);
+        processTrack (false, barLengthPpq, barAnchorPpq, windowStartPpq, blockEndPpq,
+                      blockStartPpq, ppqPerSample, numSamples, generatedMidi);
     }
 
     nextPpq = juce::jmax (nextPpq, blockEndPpq);
@@ -393,6 +399,7 @@ void PolyrhythmProcessor::publishGeneratedMidi (juce::MidiBuffer& hostBuffer, in
 //==============================================================================
 void PolyrhythmProcessor::processTrack (bool isTrackA,
                                          double barLengthPpq,
+                                         double barAnchorPpq,
                                          double windowStartPpq,
                                          double windowEndPpq,
                                          double blockStartPpq,
@@ -415,7 +422,22 @@ void PolyrhythmProcessor::processTrack (bool isTrackA,
 
     // Search the bar containing the start of the window, plus the next one, so beats that
     // land just past a bar line are still found
-    const double barStart = std::floor (windowStartPpq / barLengthPpq) * barLengthPpq;
+    const double barStart = barAnchorPpq
+                          + std::floor ((windowStartPpq - barAnchorPpq) / barLengthPpq) * barLengthPpq;
+
+    // Swing pushes odd beats late, so the gap from one beat to the next is not always one
+    // beat interval. Beat offsets within the bar, with the next bar's downbeat at the end.
+    auto beatOffsetInBar = [&] (int beat)
+    {
+        if (beat >= beatCount)
+            return barLengthPpq;
+
+        double offset = beat * beatInterval;
+        if (beat % 2 == 1)
+            offset += swing * beatInterval;
+
+        return offset;
+    };
 
     for (int barOffset = 0; barOffset <= 1; ++barOffset)
     {
@@ -426,11 +448,8 @@ void PolyrhythmProcessor::processTrack (bool isTrackA,
             if (! activeArr[beat].load()) continue;
 
             // Apply swing: push odd-numbered beats (1, 3, 5…) forward in time
-            double beatOffset = (double) beat * beatInterval;
-            if (beat % 2 == 1)
-                beatOffset += swing * beatInterval;
-
-            const double beatPpq = currentBarStart + beatOffset;
+            const double beatOffset = beatOffsetInBar ((int) beat);
+            const double beatPpq    = currentBarStart + beatOffset;
 
             if (beatPpq < windowStartPpq || beatPpq >= windowEndPpq)
                 continue;
@@ -474,10 +493,14 @@ void PolyrhythmProcessor::processTrack (bool isTrackA,
                 trackBFireCount.fetch_add (1, std::memory_order_relaxed);
             }
 
-            // Per-beat gate, capped just under the beat interval so a note always closes
-            // before the same note retriggers
-            const float beatGateVal = juce::jlimit (0.01f, 0.99f, gateArr[beat].load());
-            const int   gateSamples = std::max (1, (int) (beatGateVal * beatInterval / ppqPerSample));
+            // Per-beat gate, capped just under the gap to the next beat so a note always
+            // closes before the same note retriggers. Under swing that gap can be shorter
+            // than a beat interval.
+            const double gapToNext   = beatOffsetInBar ((int) beat + 1) - beatOffset;
+            const float  beatGateVal = juce::jlimit (0.01f, 1.0f, gateArr[beat].load());
+            const double gatePpq     = std::min ((double) beatGateVal * beatInterval,
+                                                 0.99 * gapToNext);
+            const int    gateSamples = std::max (1, (int) (gatePpq / ppqPerSample));
 
             const int noteOffSample = sampleOffset + gateSamples;
 
@@ -504,6 +527,12 @@ juce::AudioProcessorEditor* PolyrhythmProcessor::createEditor()
 void PolyrhythmProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
+
+    // Loading state hands the whole tree to apvts, beat tree included, so a copy from the
+    // last load can still be in there. Drop it, or the stale copy is the one read back.
+    for (auto old = state.getChildWithName ("BeatStates"); old.isValid();
+         old = state.getChildWithName ("BeatStates"))
+        state.removeChild (old, nullptr);
 
     // Append beat grid data as a child tree
     juce::ValueTree beatTree ("BeatStates");
@@ -536,9 +565,22 @@ void PolyrhythmProcessor::setStateInformation (const void* data, int sizeInBytes
     if (xml == nullptr) return;
 
     auto state = juce::ValueTree::fromXml (*xml);
-    apvts.replaceState (state);
 
-    auto beatTree = state.getChildWithName ("BeatStates");
+    // Projects saved before the duplication fix can hold several beat trees. Each save
+    // appended the current one after any stale copies, so the last is the one to trust.
+    juce::ValueTree beatTree;
+    for (const auto child : state)
+        if (child.hasType ("BeatStates"))
+            beatTree = child;
+
+    // The beat tree is not parameter state. Keep it out of apvts so it can't linger there
+    // and be saved alongside the fresh copy next time.
+    auto paramState = state.createCopy();
+    for (auto old = paramState.getChildWithName ("BeatStates"); old.isValid();
+         old = paramState.getChildWithName ("BeatStates"))
+        paramState.removeChild (old, nullptr);
+    apvts.replaceState (paramState);
+
     if (beatTree.isValid())
     {
         for (size_t i = 0; i < MAX_BEATS; ++i)
