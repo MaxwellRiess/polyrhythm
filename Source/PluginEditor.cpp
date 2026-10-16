@@ -348,6 +348,33 @@ void ScrollableNoteLabel::mouseUp (const juce::MouseEvent& e)
 }
 
 //==============================================================================
+// Randomise menu, shared by the per-track RND buttons and the header RANDOM button. The
+// processor bumps uiStateVersion, so the track components resync on their next tick.
+static void showRandomiseMenu (PolyrhythmProcessor& proc, juce::Component& target,
+                               bool trackA, bool trackB)
+{
+    using RT = PolyrhythmProcessor::RandomTarget;
+
+    juce::PopupMenu menu;
+    menu.addSectionHeader (trackA && trackB ? "Randomise both" : "Randomise");
+    menu.addItem (1 + (int) RT::notes,    "Notes");
+    menu.addItem (1 + (int) RT::velocity, "Velocity");
+    menu.addItem (1 + (int) RT::gate,     "Gate");
+    menu.addItem (1 + (int) RT::cutoff,   "LPF");
+    menu.addSeparator();
+    menu.addItem (1 + (int) RT::all,      "All");
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (target),
+                        [&proc, trackA, trackB] (int result)
+                        {
+                            if (result <= 0) return;
+                            const auto what = (RT) (result - 1);
+                            if (trackA) proc.randomiseTrack (true,  what);
+                            if (trackB) proc.randomiseTrack (false, what);
+                        });
+}
+
+//==============================================================================
 // RhythmTrackComponent
 //==============================================================================
 RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
@@ -377,6 +404,13 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     channelBtn.setColour (juce::TextButton::textColourOffId, Theme::TextPrimary);
     channelBtn.onClick = [this] { showChannelMenu(); };
     addAndMakeVisible (channelBtn);
+
+    randomBtn.setColour (juce::TextButton::buttonColourId,  Theme::BeatBg);
+    randomBtn.setColour (juce::TextButton::textColourOnId,  Theme::TextDim);
+    randomBtn.setColour (juce::TextButton::textColourOffId, Theme::TextDim);
+    randomBtn.setTooltip ("Randomise notes, velocity, gate or LPF on this rhythm");
+    randomBtn.onClick = [this] { showRandomiseMenu (processor, randomBtn, trackA, ! trackA); };
+    addAndMakeVisible (randomBtn);
 
     addAndMakeVisible (decBtn);
     addAndMakeVisible (incBtn);
@@ -636,6 +670,7 @@ void RhythmTrackComponent::resized()
     // Header
     trackNameLabel.setBounds (12, 8,     180, 20);
     channelBtn.setBounds     (w - 66, 8, 58,  20);
+    randomBtn.setBounds      (w - 116, 8, 44, 20);
 
     // Left column: beats row, then note row (scrollable) + reset button
     const int beatsY = 46;
@@ -780,6 +815,10 @@ PolyrhythmContent::PolyrhythmContent (PolyrhythmProcessor& p)
     // Global reset, matching the web version's RESET button
     styleHeaderBtn (resetAllBtn);
     resetAllBtn.onClick = [this] { resetAll(); };
+
+    styleHeaderBtn (randomAllBtn);
+    randomAllBtn.setTooltip ("Randomise notes, velocity, gate or LPF on both rhythms");
+    randomAllBtn.onClick = [this] { showRandomiseMenu (audioProcessor, randomAllBtn, true, true); };
 
     // CC74 output toggle
     styleHeaderBtn (ccToggleBtn);
@@ -1004,9 +1043,10 @@ void PolyrhythmContent::resized()
     // slider and the SWING slider cannot overlap each other — the PROB slider used to sit
     // straight on top of the BPM digits.
     titleLabel.setBounds  (12,  8, 200, 28);
-    resetAllBtn.setBounds (220, 10, 56, 24);
-    ccToggleBtn.setBounds (282, 10, 52, 24);
-    midiOutBtn.setBounds  (352, 10, 150, 24);
+    resetAllBtn.setBounds  (220, 10, 56, 24);
+    randomAllBtn.setBounds (282, 10, 66, 24);
+    ccToggleBtn.setBounds  (354, 10, 52, 24);
+    midiOutBtn.setBounds   (424, 10, 150, 24);
 
     int right = W - 12;
 

@@ -209,6 +209,45 @@ int PolyrhythmProcessor::stepNote (int note, int delta) const
     return note;
 }
 
+void PolyrhythmProcessor::randomiseTrack (bool isTrackA, RandomTarget what)
+{
+    auto& notes  = isTrackA ? trackANotes    : trackBNotes;
+    auto& vels   = isTrackA ? trackAVelocity : trackBVelocity;
+    auto& gates  = isTrackA ? trackAGate     : trackBGate;
+    auto& cuts   = isTrackA ? trackACutoff   : trackBCutoff;
+    const int count = juce::jlimit (1, MAX_BEATS, isTrackA ? getTrackABeatCount()
+                                                           : getTrackBBeatCount());
+    const bool all = what == RandomTarget::all;
+
+    // Separate from the audio thread's generator, which drives probability
+    juce::Random rng;
+    auto range = [&rng] (float lo, float hi) { return lo + rng.nextFloat() * (hi - lo); };
+
+    if (all || what == RandomTarget::notes)
+    {
+        // Within an octave centred on the current notes, so repeated presses wander rather
+        // than jump registers. In key when the scale lock is on.
+        int sum = 0;
+        for (int i = 0; i < count; ++i)
+            sum += notes[(size_t) i].load();
+        const int centre = (int) std::lround ((double) sum / count);
+
+        for (int i = 0; i < count; ++i)
+            notes[(size_t) i].store (snapToScale (juce::jlimit (0, 127, centre - 6 + rng.nextInt (13))));
+    }
+
+    // Lower limits keep a beat from going silent or fully muffled. Same ranges as the web.
+    for (int i = 0; i < count; ++i)
+    {
+        if (all || what == RandomTarget::velocity) vels [(size_t) i].store (range (0.35f, 1.0f));
+        if (all || what == RandomTarget::gate)     gates[(size_t) i].store (range (0.1f,  1.0f));
+        if (all || what == RandomTarget::cutoff)   cuts [(size_t) i].store (range (0.2f,  1.0f));
+    }
+
+    markBeatStateEdited();
+    uiStateVersion.fetch_add (1);
+}
+
 void PolyrhythmProcessor::snapAllNotesToScale()
 {
     if (! scaleEnabled.load())

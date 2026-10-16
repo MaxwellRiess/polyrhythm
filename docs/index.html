@@ -414,7 +414,33 @@
     z-index: 100;
     box-shadow: 0 4px 16px rgba(0,0,0,0.5);
   }
-  .sound-menu.open .sound-menu-dropdown { display: block; }
+  .sound-menu.open .sound-menu-dropdown,
+  .rnd-menu.open .sound-menu-dropdown { display: block; }
+
+  /* Randomise menus: one per rhythm, one in the transport for both */
+  .rnd-menu {
+    position: relative;
+    display: flex;
+  }
+  .rnd-menu .sound-menu-dropdown { left: auto; right: 0; min-width: 120px; }
+  .transport .rnd-menu .sound-menu-dropdown { left: 0; right: auto; }
+  .track-header-right {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .rnd-track-btn {
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--text-dim);
+    background: var(--beat-bg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .rnd-track-btn:hover { color: var(--text); border-color: var(--accent); }
   .sound-menu-item {
     font-family: inherit;
     font-size: 11px;
@@ -801,6 +827,10 @@
       flex: 1 1 calc(50% - 6px);
       justify-content: center;
     }
+    .transport .rnd-menu { flex: 1 1 100%; }
+    .transport .rnd-menu .transport-btn { flex: 1; }
+    .rnd-track-btn { min-height: 36px; padding: 0 12px; font-size: 11px; }
+    .channel-badge { padding: 6px 10px; }
 
     /* Controls bar — stack vertically */
     .controls-bar {
@@ -1028,6 +1058,12 @@
   <button class="transport-btn" id="tapBtn">
     <span class="icon">♩</span> TAP
   </button>
+  <div class="rnd-menu" data-track="both">
+    <button class="transport-btn" title="Randomise both rhythms">
+      <span class="icon">⚄</span> RANDOM <span class="icon">&#9662;</span>
+    </button>
+    <div class="sound-menu-dropdown"></div>
+  </div>
 </div>
 
 <!-- Controls Bar -->
@@ -1067,7 +1103,13 @@
   <div class="track-panel" id="trackA">
     <div class="track-header">
       <span class="track-name">RHYTHM_A</span>
-      <span class="channel-badge">CH 01</span>
+      <div class="track-header-right">
+        <div class="rnd-menu" data-track="A">
+          <button class="rnd-track-btn" title="Randomise this rhythm">RND &#9662;</button>
+          <div class="sound-menu-dropdown"></div>
+        </div>
+        <span class="channel-badge">CH 01</span>
+      </div>
     </div>
     <div class="track-sub">POLY_LOGIC_01</div>
     <div class="track-controls">
@@ -1119,7 +1161,13 @@
   <div class="track-panel" id="trackB">
     <div class="track-header">
       <span class="track-name">RHYTHM_B</span>
-      <span class="channel-badge">CH 02</span>
+      <div class="track-header-right">
+        <div class="rnd-menu" data-track="B">
+          <button class="rnd-track-btn" title="Randomise this rhythm">RND &#9662;</button>
+          <div class="sound-menu-dropdown"></div>
+        </div>
+        <span class="channel-badge">CH 02</span>
+      </div>
     </div>
     <div class="track-sub">POLY_LOGIC_02</div>
     <div class="track-controls">
@@ -1975,9 +2023,35 @@ function init() {
     });
   });
 
+  // ── Randomise Menus ───────────────────────────────────────
+  document.querySelectorAll('.rnd-menu').forEach(menu => {
+    const target = menu.dataset.track;   // 'A', 'B' or 'both'
+    const dropdown = menu.querySelector('.sound-menu-dropdown');
+
+    RANDOM_TARGETS.forEach(({ id, label }) => {
+      const item = document.createElement('div');
+      item.className = 'sound-menu-item';
+      item.textContent = label;
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        (target === 'both' ? ['A', 'B'] : [target]).forEach(t => randomiseTrack(t, id));
+        menu.classList.remove('open');
+      });
+      dropdown.appendChild(item);
+    });
+
+    menu.querySelector('button').addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.querySelectorAll('.sound-menu.open, .rnd-menu.open').forEach(m => {
+        if (m !== menu) m.classList.remove('open');
+      });
+      menu.classList.toggle('open');
+    });
+  });
+
   // Close menus when clicking outside
   document.addEventListener('click', () => {
-    document.querySelectorAll('.sound-menu.open').forEach(m => m.classList.remove('open'));
+    document.querySelectorAll('.sound-menu.open, .rnd-menu.open').forEach(m => m.classList.remove('open'));
   });
 
   // Track-level gate sliders — sets all beats on that track
@@ -2100,6 +2174,43 @@ function attachVerticalDrag(el, pxPerStep, onStep) {
   };
   el.addEventListener('pointerup', end);
   el.addEventListener('pointercancel', end);
+}
+
+// ── Randomise ────────────────────────────────────────────
+// Changes per-beat values on the beats in use. Active steps, beat counts and the bar are
+// left alone. Lower limits keep a beat from going silent or fully muffled.
+const RANDOM_TARGETS = [
+  { id: 'notes',    label: 'NOTES' },
+  { id: 'velocity', label: 'VELOCITY' },
+  { id: 'gate',     label: 'GATE' },
+  { id: 'cutoff',   label: 'LPF' },
+  { id: 'all',      label: 'ALL' },
+];
+const randRange = (lo, hi) => lo + Math.random() * (hi - lo);
+
+function randomiseTrack(trackId, what) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  const beats = track.beats.slice(0, track.beatCount);
+  const all = what === 'all';
+
+  if (all || what === 'notes') {
+    // Within an octave centred on the current notes, so repeated presses wander rather
+    // than jump registers. In key when the scale lock is on.
+    const centre = Math.round(beats.reduce((sum, b) => sum + b.note, 0) / beats.length);
+    beats.forEach(b => {
+      const n = centre - 6 + Math.floor(Math.random() * 13);
+      b.note = snapToScale(Math.max(0, Math.min(127, n)));
+    });
+  }
+  if (all || what === 'velocity') beats.forEach(b => b.velocity = randRange(0.35, 1.0));
+  if (all || what === 'gate')     beats.forEach(b => b.gate     = randRange(0.1, 1.0));
+  if (all || what === 'cutoff')   beats.forEach(b => b.cutoff   = randRange(0.2, 1.0));
+
+  updateTrackNoteDisplay(trackId);
+  updateAllPadNoteNames(trackId);
+  updateAllPadVelocities(trackId);
+  updateAllPadGates(trackId);
+  updateAllPadCutoffs(trackId);
 }
 
 // Re-snap every note to the scale (when the lock is on) and refresh the UI

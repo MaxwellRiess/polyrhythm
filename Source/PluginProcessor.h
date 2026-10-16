@@ -85,6 +85,12 @@ public:
     void snapAllNotesToScale();                 // message thread only
 
     //==========================================================================
+    // Randomise per-beat values on the beats in use. Active steps, beat counts and the
+    // bar are left alone. Message thread only.
+    enum class RandomTarget { notes, velocity, gate, cutoff, all };
+    void randomiseTrack (bool isTrackA, RandomTarget what);
+
+    //==========================================================================
     // Direct MIDI output (e.g. an IAC Driver bus), independent of the host's own MIDI
     // routing. Lets any DAW track record the generated MIDI whatever slot we're in.
     static juce::Array<juce::MidiDeviceInfo> getMidiOutputDevices();

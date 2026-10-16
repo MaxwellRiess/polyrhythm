@@ -14,6 +14,7 @@ A polyrhythm MIDI generator available as a **JUCE audio plugin** (AU/VST3) and a
 - **Per-beat controls** — toggle active state, set individual MIDI notes, velocities and gate lengths
 - **Global note selector**: scroll wheel, click and drag, or touch swipe to shift all beats on a track
 - **Scale lock**: pick a root and scale (major, minor, the modes, pentatonics, blues) and every note snaps to it and steps by scale degree. Switch it off to go chromatic again
+- **Randomise**: per rhythm or both at once, re-roll notes, velocity, gate, LPF or all of them. Active steps, beat counts and the bar stay as they are, and notes stay in key when the scale lock is on
 - **Track-level gate, velocity and low-pass**: each sets every beat on its track, then fine-tune per beat
 - **Swing** — pushes odd-numbered beats forward for groove
 - **Probability** — random chance to skip beats for generative variation
@@ -101,6 +102,7 @@ Both builds auto-install to `~/Library/Audio/Plug-Ins/` on macOS. Look for **Pol
 | **CH nn** | MIDI output channel for the track — click to change | Plugin |
 | **CC74** | Send the per-beat LPF value as MIDI CC74 | Plugin |
 | **MIDI OUT** | Send generated MIDI to a port directly, bypassing host routing | Plugin |
+| **RND** / **RANDOM** | Randomise notes, velocity, gate, LPF or all, on one rhythm (RND) or both (RANDOM) | Both |
 | **RESET** | Restore all settings to defaults | Both |
 
 ### Keyboard Shortcuts (Web)

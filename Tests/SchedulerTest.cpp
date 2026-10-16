@@ -599,6 +599,51 @@ int main()
     }
 
     //--------------------------------------------------------------------------
+    std::printf ("\nCase 15: randomise changes only the chosen values on the beats in use\n");
+    {
+        using RT = PolyrhythmProcessor::RandomTarget;
+        PolyrhythmProcessor proc;   // track A: 4 beats, track B: 3
+        proc.trackAActive[1].store (false);
+
+        proc.randomiseTrack (true, RT::velocity);
+
+        bool velChanged = false, othersKept = true;
+        for (size_t i = 0; i < 4; ++i)
+        {
+            const float v = proc.trackAVelocity[i].load();
+            velChanged = velChanged || std::abs (v - 0.8f) > 1.0e-4f;
+            othersKept = othersKept && v >= 0.35f && v <= 1.0f
+                         && proc.trackANotes[i].load() == 36
+                         && std::abs (proc.trackAGate[i].load() - 0.5f) < 1.0e-4f
+                         && std::abs (proc.trackACutoff[i].load() - 1.0f) < 1.0e-4f;
+        }
+        check (velChanged, "velocity: at least one track A velocity changed");
+        check (othersKept, "velocity: in range, and notes, gate and LPF untouched");
+        check (! proc.trackAActive[1].load() && proc.trackAActive[0].load(),
+               "velocity: active steps are kept");
+        check (std::abs (proc.trackAVelocity[5].load() - 0.8f) < 1.0e-4f,
+               "velocity: beats past the beat count are left alone");
+        check (std::abs (proc.trackBVelocity[0].load() - 0.8f) < 1.0e-4f,
+               "velocity: track B is left alone");
+
+        proc.scaleRoot.store (5);
+        proc.scaleType.store (3);
+        proc.scaleEnabled.store (true);
+        proc.randomiseTrack (false, RT::all);
+
+        bool inKey = true, inRange = true;
+        for (size_t i = 0; i < 3; ++i)
+        {
+            const int n = proc.trackBNotes[i].load();
+            inKey   = inKey && proc.isInScale (n);
+            inRange = inRange && n >= 38 - 7 && n <= 38 + 7;
+        }
+        check (inKey,   "all: every randomised note is in the locked scale");
+        check (inRange, "all: notes stay within about an octave of where they were");
+        check (proc.getTrackBBeatCount() == 3, "all: the beat count is unchanged");
+    }
+
+    //--------------------------------------------------------------------------
     std::printf ("\n%s (%d failure%s)\n",
                  failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED",
                  failures, failures == 1 ? "" : "s");

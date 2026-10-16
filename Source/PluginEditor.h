@@ -207,6 +207,9 @@ private:
     void showChannelMenu();
     void resetNotes();
 
+    // Randomise menu for this track
+    juce::TextButton randomBtn { "RND" };
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RhythmTrackComponent)
 };
 
@@ -260,6 +263,9 @@ private:
     juce::ComboBox   scaleTypeBox;
     void applyScaleFromUi();
     void updateScaleControls();
+
+    // Randomise both tracks, like the web version's RANDOM transport menu
+    juce::TextButton randomAllBtn { "RANDOM" };
 
     // Reset everything to defaults, like the web version's RESET transport button
     juce::TextButton resetAllBtn { "RESET" };
