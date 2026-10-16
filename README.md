@@ -92,7 +92,7 @@ Both builds auto-install to `~/Library/Audio/Plug-Ins/` on macOS. Look for **Pol
 | **SWING** | Offset for odd-numbered beats (0-50%) | Both |
 | **PROB** | Probability each beat fires (0-100%) | Both |
 | **LPF** | Per-beat low-pass brightness | Both |
-| **VEL** | Per-beat velocity | Plugin |
+| **VEL** | Per-beat velocity | Both |
 | **SOUND** | Preview sound type — Sine, Tri, Sqr, Saw, Click, Noise | Web |
 | **CH nn** | MIDI output channel for the track — click to change | Plugin |
 | **CC74** | Send the per-beat LPF value as MIDI CC74 | Plugin |
