@@ -1,13 +1,26 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include <algorithm>
 
 //==============================================================================
+/*  The same sources build two plugins:
+
+      - a MIDI effect (AU 'aumi') for Logic's MIDI FX slot, with no audio buses
+      - an instrument (AU 'aumu') for the Instrument slot, which needs an audio bus even
+        though this plugin only ever emits MIDI and leaves the buffer silent
+
+    JucePlugin_IsMidiEffect comes from the IS_MIDI_EFFECT flag on each CMake target.
+*/
 PolyrhythmProcessor::PolyrhythmProcessor()
-    : AudioProcessor (BusesProperties()
-                          .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
+    : AudioProcessor (
+       #if JucePlugin_IsMidiEffect
+          BusesProperties()
+       #else
+          BusesProperties().withOutput ("Output", juce::AudioChannelSet::stereo(), true)
+       #endif
+      ),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
-    // Default beat state: only beat 0 active per track
     for (size_t i = 0; i < MAX_BEATS; ++i)
     {
         trackAActive[i]   = true;
@@ -21,9 +34,15 @@ PolyrhythmProcessor::PolyrhythmProcessor()
         trackAGate[i]     = 0.5f;
         trackBGate[i]     = 0.5f;
     }
+
+    resetCutoffCC();
 }
 
-PolyrhythmProcessor::~PolyrhythmProcessor() {}
+PolyrhythmProcessor::~PolyrhythmProcessor()
+{
+    midiOutSender.stopTimer();
+    setMidiOutputDevice ({});
+}
 
 //==============================================================================
 juce::AudioProcessorValueTreeState::ParameterLayout
@@ -33,8 +52,11 @@ PolyrhythmProcessor::createParameterLayout()
 
     params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackA_beats",   "Track A Beats",          1,  16,  4));
     params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackB_beats",   "Track B Beats",          1,  16,  3));
+    // Track B defaults to channel 2 so the two tracks are separable downstream — the UI
+    // has always shown "CH 02" for track B, but the default used to be 1 like track A,
+    // so both tracks landed on the same channel.
     params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackA_channel", "Track A MIDI Channel",   1,  16,  1));
-    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackB_channel", "Track B MIDI Channel",   1,  16,  1));
+    params.push_back (std::make_unique<juce::AudioParameterInt>  ("trackB_channel", "Track B MIDI Channel",   1,  16,  2));
     // Per-beat notes are stored in the beat state ValueTree, not as automatable params
     params.push_back (std::make_unique<juce::AudioParameterFloat>("swing",          "Swing",                  0.0f, 0.5f,  0.0f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>("trackA_gate",    "Track A Gate",           0.01f, 1.0f, 0.5f));
@@ -79,10 +101,124 @@ float PolyrhythmProcessor::getTrackBGate()      const { return *apvts.getRawPara
 float PolyrhythmProcessor::getProbability()     const { return *apvts.getRawParameterValue ("probability"); }
 
 //==============================================================================
+// Direct MIDI output device
+juce::Array<juce::MidiDeviceInfo> PolyrhythmProcessor::getMidiOutputDevices()
+{
+    return juce::MidiOutput::getAvailableDevices();
+}
+
+void PolyrhythmProcessor::setMidiOutputDevice (const juce::String& identifier)
+{
+    std::unique_ptr<juce::MidiOutput> newDevice;
+
+    if (identifier.isNotEmpty())
+        newDevice = juce::MidiOutput::openDevice (identifier);
+
+    std::unique_ptr<juce::MidiOutput> previous;
+    {
+        const juce::ScopedLock sl (midiOutLock);
+        previous          = std::move (midiOutDevice);
+        midiOutDevice     = std::move (newDevice);
+        midiOutIdentifier = (midiOutDevice != nullptr) ? identifier : juce::String();
+    }
+
+    const bool active = midiOutIdentifier.isNotEmpty();
+    midiOutActive.store (active, std::memory_order_relaxed);
+
+    if (active)
+    {
+        // 1 ms drain. The IAC bus adds jitter of its own, so chasing tighter than this
+        // buys nothing.
+        if (! midiOutSender.isTimerRunning())
+            midiOutSender.startTimer (1);
+    }
+    else
+    {
+        midiOutSender.stopTimer();
+        drainMidiOutQueue();   // clear anything still queued
+    }
+
+    previous.reset();
+}
+
+//==============================================================================
+void PolyrhythmProcessor::queueForExternalMidiOut (const juce::MidiBuffer& generated)
+{
+    if (! midiOutActive.load (std::memory_order_relaxed) || generated.isEmpty())
+        return;
+
+    for (const auto meta : generated)
+    {
+        if (meta.numBytes < 1 || meta.numBytes > 3)
+            continue;
+
+        int start1, size1, start2, size2;
+        midiOutFifo.prepareToWrite (1, start1, size1, start2, size2);
+
+        // Full queue: drop rather than block the audio thread
+        if (size1 + size2 < 1)
+            return;
+
+        auto& slot = midiOutQueue[(size_t) (size1 > 0 ? start1 : start2)];
+        std::memcpy (slot.bytes, meta.data, (size_t) meta.numBytes);
+        slot.size = (juce::uint8) meta.numBytes;
+
+        midiOutFifo.finishedWrite (1);
+    }
+}
+
+void PolyrhythmProcessor::drainMidiOutQueue()
+{
+    int start1, size1, start2, size2;
+    midiOutFifo.prepareToRead (midiOutFifo.getNumReady(), start1, size1, start2, size2);
+
+    if (size1 + size2 > 0)
+    {
+        const juce::ScopedLock sl (midiOutLock);
+
+        auto sendRange = [this] (int start, int size)
+        {
+            for (int i = 0; i < size; ++i)
+            {
+                const auto& slot = midiOutQueue[(size_t) (start + i)];
+
+                if (midiOutDevice != nullptr && slot.size > 0)
+                    midiOutDevice->sendMessageNow (juce::MidiMessage (slot.bytes, (int) slot.size));
+            }
+        };
+
+        sendRange (start1, size1);
+        sendRange (start2, size2);
+    }
+
+    midiOutFifo.finishedRead (size1 + size2);
+}
+
+juce::String PolyrhythmProcessor::getMidiOutputIdentifier() const
+{
+    const juce::ScopedLock sl (midiOutLock);
+    return midiOutIdentifier;
+}
+
+juce::String PolyrhythmProcessor::getMidiOutputName() const
+{
+    const juce::ScopedLock sl (midiOutLock);
+    return midiOutDevice != nullptr ? midiOutDevice->getName() : juce::String();
+}
+
+//==============================================================================
 void PolyrhythmProcessor::prepareToPlay (double sr, int)
 {
     sampleRateVal = sr;
+
+    // Reserve up front so the audio thread never allocates when scheduling note-offs.
+    // Worst case is every beat of both tracks outstanding at once.
     pendingNoteOffs.clear();
+    pendingNoteOffs.reserve (MAX_BEATS * 2);
+
+    ppqCursorValid = false;
+    wasPlaying     = false;
+    resetCutoffCC();
 }
 
 void PolyrhythmProcessor::releaseResources() {}
@@ -91,53 +227,90 @@ bool PolyrhythmProcessor::isBusesLayoutSupported (const BusesLayout& layouts) co
 {
     if (layouts.getMainInputChannelSet() != juce::AudioChannelSet::disabled())
         return false;
-    auto outSet = layouts.getMainOutputChannelSet();
-    return outSet == juce::AudioChannelSet::stereo()
-        || outSet == juce::AudioChannelSet::mono()
-        || outSet == juce::AudioChannelSet::disabled();
+
+   #if JucePlugin_IsMidiEffect
+    // A MIDI effect carries no audio at all
+    return layouts.getMainOutputChannelSet() == juce::AudioChannelSet::disabled();
+   #else
+    // The instrument build needs an output bus to load, though it stays silent
+    const auto out = layouts.getMainOutputChannelSet();
+    return out == juce::AudioChannelSet::stereo()
+        || out == juce::AudioChannelSet::mono()
+        || out == juce::AudioChannelSet::disabled();
+   #endif
+}
+
+//==============================================================================
+void PolyrhythmProcessor::resetCutoffCC()
+{
+    lastCutoffCC.fill (-1);
+}
+
+void PolyrhythmProcessor::flushPendingNoteOffs (juce::MidiBuffer& midiOut, int sampleOffset)
+{
+    for (auto& noff : pendingNoteOffs)
+        midiOut.addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note), sampleOffset);
+
+    pendingNoteOffs.clear();
 }
 
 //==============================================================================
 void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
                                          juce::MidiBuffer& midiMessages)
 {
+    juce::ScopedNoDenormals noDenormals;
     buffer.clear();
 
+    const int numSamples = buffer.getNumSamples();
+
+    // Everything we generate lands here first. midiMessages arrives holding the host's
+    // input, which is passed through to the instrument downstream but must never be fed
+    // back to the external port.
+    generatedMidi.clear();
+
     auto* playHead = getPlayHead();
-    if (playHead == nullptr) return;
+    auto  posOpt   = playHead != nullptr ? playHead->getPosition()
+                                         : juce::Optional<juce::AudioPlayHead::PositionInfo>();
 
-    auto posOpt = playHead->getPosition();
-    if (!posOpt.hasValue()) return;
-
-    const bool playing = posOpt->getIsPlaying();
+    const bool playing = posOpt.hasValue() && posOpt->getIsPlaying();
     transportPlaying.store (playing);
 
-    // Update BPM display for the UI
-    if (auto bpmOpt = posOpt->getBpm())
-        currentBpm.store (*bpmOpt);
+    if (posOpt.hasValue())
+        if (auto bpmOpt = posOpt->getBpm())
+            currentBpm.store (*bpmOpt);
 
-    if (!playing)
+    if (! playing)
     {
         if (wasPlaying)
         {
-            // Flush all pending note-offs immediately
-            for (auto& noff : pendingNoteOffs)
-                midiMessages.addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note), 0);
-            pendingNoteOffs.clear();
-            wasPlaying = false;
+            // Close every note we still have hanging, then belt-and-braces all-notes-off
+            // on both channels so nothing sticks in the instrument downstream
+            flushPendingNoteOffs (generatedMidi, 0);
+            generatedMidi.addEvent (juce::MidiMessage::allNotesOff (getTrackAChannel()), 0);
+            generatedMidi.addEvent (juce::MidiMessage::allNotesOff (getTrackBChannel()), 0);
+
+            wasPlaying     = false;
+            ppqCursorValid = false;
+            resetCutoffCC();
         }
+
+        publishGeneratedMidi (midiMessages, numSamples);
         return;
     }
 
     wasPlaying = true;
 
     auto ppqOpt = posOpt->getPpqPosition();
-    if (!ppqOpt.hasValue()) return;
+    if (! ppqOpt.hasValue())
+    {
+        publishGeneratedMidi (midiMessages, numSamples);
+        return;
+    }
 
     const double bpm           = currentBpm.load();
     const double blockStartPpq = *ppqOpt;
     const double ppqPerSample  = bpm / (60.0 * sampleRateVal);
-    const double blockEndPpq   = blockStartPpq + buffer.getNumSamples() * ppqPerSample;
+    const double blockEndPpq   = blockStartPpq + numSamples * ppqPerSample;
 
     // Bar length in PPQ from the time signature (default 4/4)
     int numerator = 4, denominator = 4;
@@ -148,229 +321,174 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     }
     const double barLengthPpq = (4.0 * numerator) / denominator;
 
-    // Process pending note-offs from previous blocks
+    // Work out the PPQ window to search for beats. Continuing from where the last block
+    // finished closes the gaps and overlaps between host-reported block positions; a gap
+    // would drop beats and an overlap would fire them twice.
+    double windowStartPpq = blockStartPpq;
+
+    if (! ppqCursorValid || std::abs (blockStartPpq - nextPpq) > ppqDiscontinuity)
     {
-        std::vector<PendingNoteOff> remaining;
-        remaining.reserve (pendingNoteOffs.size());
-        for (auto& noff : pendingNoteOffs)
-        {
-            if (noff.samplesRemaining < buffer.getNumSamples())
-                midiMessages.addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note),
-                                       noff.samplesRemaining);
-            else
-                remaining.push_back ({ noff.samplesRemaining - buffer.getNumSamples(),
-                                       noff.channel, noff.note });
-        }
-        pendingNoteOffs = std::move (remaining);
+        // Transport looped or was relocated — resync rather than trying to catch up over
+        // the jump, and drop note-offs that belong to the old playback position. The
+        // cursor has to be moved too: on a loop back it is ahead of the new position, and
+        // leaving it there would stall the sequencer until playback caught up again.
+        flushPendingNoteOffs (generatedMidi, 0);
+        resetCutoffCC();
+        ppqCursorValid = true;
+        nextPpq        = blockStartPpq;
+    }
+    else
+    {
+        windowStartPpq = nextPpq;
     }
 
-    processTrack (true,  barLengthPpq, blockStartPpq, blockEndPpq, ppqPerSample,
-                  buffer.getNumSamples(), midiMessages);
-    processTrack (false, barLengthPpq, blockStartPpq, blockEndPpq, ppqPerSample,
-                  buffer.getNumSamples(), midiMessages);
+    // Emit note-offs that came due during this block
+    {
+        size_t keep = 0;
+        for (size_t i = 0; i < pendingNoteOffs.size(); ++i)
+        {
+            auto& noff = pendingNoteOffs[i];
 
-    if (audioPreviewEnabled.load())
-        renderVoices (buffer);
+            if (noff.samplesRemaining < numSamples)
+            {
+                generatedMidi.addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note),
+                                        noff.samplesRemaining);
+            }
+            else
+            {
+                pendingNoteOffs[keep++] = { noff.samplesRemaining - numSamples,
+                                            noff.channel, noff.note };
+            }
+        }
+        pendingNoteOffs.resize (keep);
+    }
+
+    if (numSamples > 0 && blockEndPpq > windowStartPpq)
+    {
+        processTrack (true,  barLengthPpq, windowStartPpq, blockEndPpq, blockStartPpq,
+                      ppqPerSample, numSamples, generatedMidi);
+        processTrack (false, barLengthPpq, windowStartPpq, blockEndPpq, blockStartPpq,
+                      ppqPerSample, numSamples, generatedMidi);
+    }
+
+    nextPpq = juce::jmax (nextPpq, blockEndPpq);
+
+    publishGeneratedMidi (midiMessages, numSamples);
 }
 
 //==============================================================================
-void PolyrhythmProcessor::triggerVoice (double frequency, SoundType type, float cutoff)
+/*  Generated notes go two places: into the host's buffer, where they join the
+    pass-through input on the way to the instrument, and onto the external port. Only the
+    generated half reaches the port — see queueForExternalMidiOut.
+*/
+void PolyrhythmProcessor::publishGeneratedMidi (juce::MidiBuffer& hostBuffer, int numSamples)
 {
-    // Find a free voice, or steal the quietest one
-    SynthVoice* target = nullptr;
-    float minAmp = 1.0f;
-    for (auto& v : voices)
-    {
-        if (!v.active)  { target = &v; break; }
-        if (v.amp < minAmp) { minAmp = v.amp; target = &v; }
-    }
-    if (target)
-    {
-        target->phase      = 0.0;
-        target->inc        = juce::MathConstants<double>::twoPi * frequency / sampleRateVal;
-        target->amp        = 0.5f;
-        target->active     = true;
-        target->type       = type;
-        target->clickCount = (type == SoundType::Click) ? (int)(sampleRateVal * 0.004) : 0;
-        target->lpCutoff   = cutoff;
-        target->lpState    = 0.0f;
-    }
-}
+    if (generatedMidi.isEmpty())
+        return;
 
-void PolyrhythmProcessor::renderVoices (juce::AudioBuffer<float>& buffer)
-{
-    const int   numSamples  = buffer.getNumSamples();
-    const int   numChannels = buffer.getNumChannels();
-    // ~80 ms exponential decay (shorter for click/noise)
-    const float decayLong  = (float)std::exp (-1.0 / (0.08  * sampleRateVal));
-    const float decayShort = (float)std::exp (-1.0 / (0.015 * sampleRateVal));
-
-    for (auto& v : voices)
-    {
-        if (!v.active) continue;
-
-        double phase = v.phase;
-        float  amp   = v.amp;
-        const float decay = (v.type == SoundType::Click || v.type == SoundType::Noise)
-                            ? decayShort : decayLong;
-
-        // One-pole low-pass: coefficient from cutoff (0-1 maps to 200-20000 Hz)
-        const float minF = 200.0f, maxF = 20000.0f;
-        const float lpFreq = minF * std::pow (maxF / minF, v.lpCutoff);
-        const float lpCoeff = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * lpFreq / (float)sampleRateVal);
-        float lpS = v.lpState;
-
-        for (int s = 0; s < numSamples; ++s)
-        {
-            float sample = 0.0f;
-            const double twoPi = juce::MathConstants<double>::twoPi;
-
-            switch (v.type)
-            {
-                case SoundType::Sine:
-                    sample = (float)std::sin (phase);
-                    break;
-
-                case SoundType::Triangle:
-                    sample = (float)(2.0 / juce::MathConstants<double>::pi * std::asin (std::sin (phase)));
-                    break;
-
-                case SoundType::Square:
-                    sample = std::sin (phase) >= 0.0 ? 0.8f : -0.8f;
-                    break;
-
-                case SoundType::Saw:
-                    sample = (float)(std::fmod (phase, twoPi) / juce::MathConstants<double>::pi - 1.0);
-                    break;
-
-                case SoundType::Click:
-                    if (v.clickCount > 0)
-                    {
-                        sample = (float)std::sin (phase) * 1.2f;
-                        v.clickCount--;
-                    }
-                    else
-                        sample = 0.0f;
-                    break;
-
-                case SoundType::Noise:
-                    sample = (random.nextFloat() * 2.0f - 1.0f);
-                    break;
-
-                default: break;
-            }
-
-            sample *= amp;
-
-            // Apply one-pole low-pass filter
-            lpS += lpCoeff * (sample - lpS);
-            sample = lpS;
-
-            for (int ch = 0; ch < numChannels; ++ch)
-                buffer.getWritePointer (ch)[s] += sample;
-
-            phase += v.inc;
-            amp   *= decay;
-        }
-        v.lpState = lpS;
-
-        v.phase = std::fmod (phase, juce::MathConstants<double>::twoPi);
-        v.amp   = amp;
-        if (v.amp < 0.001f) v.active = false;
-    }
+    queueForExternalMidiOut (generatedMidi);
+    hostBuffer.addEvents (generatedMidi, 0, numSamples > 0 ? numSamples : -1, 0);
 }
 
 //==============================================================================
 void PolyrhythmProcessor::processTrack (bool isTrackA,
                                          double barLengthPpq,
+                                         double windowStartPpq,
+                                         double windowEndPpq,
                                          double blockStartPpq,
-                                         double blockEndPpq,
                                          double ppqPerSample,
                                          int    numSamples,
                                          juce::MidiBuffer& midiOut)
 {
-    const int beatCount = isTrackA ? getTrackABeatCount() : getTrackBBeatCount();
-    const int channel   = isTrackA ? getTrackAChannel()   : getTrackBChannel();
-    const float prob    = getProbability();
-    const float swing   = getSwing();
+    const int   beatCount = isTrackA ? getTrackABeatCount() : getTrackBBeatCount();
+    const int   channel   = isTrackA ? getTrackAChannel()   : getTrackBChannel();
+    const float prob      = getProbability();
+    const float swing     = getSwing();
 
     auto& activeArr = isTrackA ? trackAActive   : trackBActive;
     auto& velArr    = isTrackA ? trackAVelocity : trackBVelocity;
     auto& noteArr   = isTrackA ? trackANotes    : trackBNotes;
+    auto& cutoffArr = isTrackA ? trackACutoff   : trackBCutoff;
+    auto& gateArr   = isTrackA ? trackAGate     : trackBGate;
 
     const double beatInterval = barLengthPpq / std::max (1, beatCount);
 
-    // We check the current bar and one bar ahead to handle block-boundary cases
-    const double barStart = std::floor (blockStartPpq / barLengthPpq) * barLengthPpq;
+    // Search the bar containing the start of the window, plus the next one, so beats that
+    // land just past a bar line are still found
+    const double barStart = std::floor (windowStartPpq / barLengthPpq) * barLengthPpq;
 
     for (int barOffset = 0; barOffset <= 1; ++barOffset)
     {
         const double currentBarStart = barStart + barOffset * barLengthPpq;
 
-        for (size_t beat = 0; beat < (size_t)beatCount; ++beat)
+        for (size_t beat = 0; beat < (size_t) beatCount; ++beat)
         {
-            if (!activeArr[beat].load()) continue;
+            if (! activeArr[beat].load()) continue;
 
             // Apply swing: push odd-numbered beats (1, 3, 5…) forward in time
-            double beatOffset = (double)beat * beatInterval;
+            double beatOffset = (double) beat * beatInterval;
             if (beat % 2 == 1)
                 beatOffset += swing * beatInterval;
 
             const double beatPpq = currentBarStart + beatOffset;
 
-            if (beatPpq >= blockStartPpq && beatPpq < blockEndPpq)
+            if (beatPpq < windowStartPpq || beatPpq >= windowEndPpq)
+                continue;
+
+            // Probability gate
+            if (prob < 1.0f && random.nextFloat() > prob) continue;
+
+            // Beats recovered from a gap sit before this block and clamp to sample 0
+            int sampleOffset = (int) ((beatPpq - blockStartPpq) / ppqPerSample);
+            sampleOffset = juce::jlimit (0, numSamples - 1, sampleOffset);
+
+            const int velInt   = juce::jlimit (1, 127, (int) (velArr[beat].load() * 127.0f));
+            const int beatNote = juce::jlimit (0, 127, noteArr[beat].load());
+
+            // Optional LP cutoff as MIDI CC74 (Brightness), only when the value actually
+            // changed — sending it on every note floods recorded regions
+            if (sendCutoffCC.load())
             {
-                // Probability gate
-                if (prob < 1.0f && random.nextFloat() > prob) continue;
+                const int ccVal = juce::jlimit (0, 127, (int) (cutoffArr[beat].load() * 127.0f));
 
-                int sampleOffset = (int)((beatPpq - blockStartPpq) / ppqPerSample);
-                sampleOffset = juce::jlimit (0, numSamples - 1, sampleOffset);
-
-                const int velInt  = juce::jlimit (1, 127,
-                    (int)(velArr[beat].load() * 127.0f));
-                const int beatNote = juce::jlimit (0, 127, noteArr[beat].load());
-
-                // Send LP cutoff as MIDI CC74 (Brightness) before note-on
+                if (ccVal != lastCutoffCC[(size_t) channel])
                 {
-                    auto& cutoffArr = isTrackA ? trackACutoff : trackBCutoff;
-                    const int ccVal = juce::jlimit (0, 127, (int)(cutoffArr[beat].load() * 127.0f));
+                    lastCutoffCC[(size_t) channel] = ccVal;
                     midiOut.addEvent (juce::MidiMessage::controllerEvent (channel, 74, ccVal),
-                                     sampleOffset);
+                                      sampleOffset);
                 }
+            }
 
-                // Note-on (MIDI)
-                midiOut.addEvent (juce::MidiMessage::noteOn (channel, beatNote, (juce::uint8) velInt),
-                                  sampleOffset);
+            midiOut.addEvent (juce::MidiMessage::noteOn (channel, beatNote, (juce::uint8) velInt),
+                              sampleOffset);
 
-                // Signal the UI which beat just fired (for pulse animation)
-                if (isTrackA) {
-                    trackACurrentBeat.store ((int)beat, std::memory_order_relaxed);
-                    trackAFireCount.fetch_add (1, std::memory_order_relaxed);
-                } else {
-                    trackBCurrentBeat.store ((int)beat, std::memory_order_relaxed);
-                    trackBFireCount.fetch_add (1, std::memory_order_relaxed);
-                }
+            // Signal the UI which beat just fired (for pulse animation)
+            if (isTrackA)
+            {
+                trackACurrentBeat.store ((int) beat, std::memory_order_relaxed);
+                trackAFireCount.fetch_add (1, std::memory_order_relaxed);
+            }
+            else
+            {
+                trackBCurrentBeat.store ((int) beat, std::memory_order_relaxed);
+                trackBFireCount.fetch_add (1, std::memory_order_relaxed);
+            }
 
-                // Audio preview using per-track sound type, note frequency, and cutoff
-                if (audioPreviewEnabled.load())
-                {
-                    auto& cutoffArr = isTrackA ? trackACutoff : trackBCutoff;
-                    const double freq = 440.0 * std::pow (2.0, (beatNote - 69) / 12.0);
-                    const auto stype = (SoundType)(isTrackA ? trackASoundType.load()
-                                                            : trackBSoundType.load());
-                    triggerVoice (freq, stype, cutoffArr[beat].load());
-                }
+            // Per-beat gate, capped just under the beat interval so a note always closes
+            // before the same note retriggers
+            const float beatGateVal = juce::jlimit (0.01f, 0.99f, gateArr[beat].load());
+            const int   gateSamples = std::max (1, (int) (beatGateVal * beatInterval / ppqPerSample));
 
-                // Per-beat gate
-                const float beatGateVal = (isTrackA ? trackAGate[beat] : trackBGate[beat]).load();
-                const int gateSamples = std::max (1, (int)(beatGateVal * beatInterval / ppqPerSample));
+            const int noteOffSample = sampleOffset + gateSamples;
 
-                // Note-off scheduling
-                const int noteOffSample = sampleOffset + gateSamples;
-                if (noteOffSample < numSamples)
-                    midiOut.addEvent (juce::MidiMessage::noteOff (channel, beatNote), noteOffSample);
-                else
-                    pendingNoteOffs.push_back ({ noteOffSample - numSamples, channel, beatNote });
+            if (noteOffSample < numSamples)
+            {
+                midiOut.addEvent (juce::MidiMessage::noteOff (channel, beatNote), noteOffSample);
+            }
+            else if (pendingNoteOffs.size() < pendingNoteOffs.capacity())
+            {
+                // Guarded against growth so the audio thread never allocates here
+                pendingNoteOffs.push_back ({ noteOffSample - numSamples, channel, beatNote });
             }
         }
     }
@@ -402,9 +520,10 @@ void PolyrhythmProcessor::getStateInformation (juce::MemoryBlock& destData)
         beatTree.setProperty ("bCutoff" + juce::String ((int)i), trackBCutoff[i].load(),   nullptr);
         beatTree.setProperty ("bGate"   + juce::String ((int)i), trackBGate[i].load(),     nullptr);
     }
-    beatTree.setProperty ("aSoundType", trackASoundType.load(), nullptr);
-    beatTree.setProperty ("bSoundType", trackBSoundType.load(), nullptr);
-    beatTree.setProperty ("audioPreview", audioPreviewEnabled.load(), nullptr);
+    beatTree.setProperty ("sendCutoffCC",  sendCutoffCC.load(),      nullptr);
+    beatTree.setProperty ("midiOutDevice", getMidiOutputIdentifier(), nullptr);
+    beatTree.setProperty ("editorW",       editorWidth.load(),       nullptr);
+    beatTree.setProperty ("editorH",       editorHeight.load(),      nullptr);
     state.addChild (beatTree, -1, nullptr);
 
     std::unique_ptr<juce::XmlElement> xml (state.createXml());
@@ -424,20 +543,36 @@ void PolyrhythmProcessor::setStateInformation (const void* data, int sizeInBytes
     {
         for (size_t i = 0; i < MAX_BEATS; ++i)
         {
-            trackAActive[i]   = (bool) beatTree.getProperty ("aActive" + juce::String ((int)i), i == 0);
+            trackAActive[i]   = (bool) beatTree.getProperty ("aActive" + juce::String ((int)i), true);
             trackAVelocity[i] = (float)beatTree.getProperty ("aVel"    + juce::String ((int)i), 0.8f);
             trackANotes[i]    = (int)  beatTree.getProperty ("aNote"   + juce::String ((int)i), 36);
             trackACutoff[i]   = (float)beatTree.getProperty ("aCutoff" + juce::String ((int)i), 1.0f);
             trackAGate[i]     = (float)beatTree.getProperty ("aGate"   + juce::String ((int)i), 0.5f);
-            trackBActive[i]   = (bool) beatTree.getProperty ("bActive" + juce::String ((int)i), i == 0);
+            trackBActive[i]   = (bool) beatTree.getProperty ("bActive" + juce::String ((int)i), true);
             trackBVelocity[i] = (float)beatTree.getProperty ("bVel"    + juce::String ((int)i), 0.8f);
             trackBNotes[i]    = (int)  beatTree.getProperty ("bNote"   + juce::String ((int)i), 38);
             trackBCutoff[i]   = (float)beatTree.getProperty ("bCutoff" + juce::String ((int)i), 1.0f);
             trackBGate[i]     = (float)beatTree.getProperty ("bGate"   + juce::String ((int)i), 0.5f);
         }
-        trackASoundType.store ((int)beatTree.getProperty ("aSoundType", (int)SoundType::Sine));
-        trackBSoundType.store ((int)beatTree.getProperty ("bSoundType", (int)SoundType::Triangle));
-        audioPreviewEnabled.store ((bool)beatTree.getProperty ("audioPreview", true));
+
+        sendCutoffCC.store ((bool) beatTree.getProperty ("sendCutoffCC", false));
+        editorWidth.store  (juce::jmax (EDITOR_BASE_W / 2,
+                                        (int) beatTree.getProperty ("editorW", EDITOR_BASE_W)));
+        editorHeight.store (juce::jmax (EDITOR_BASE_H / 2,
+                                        (int) beatTree.getProperty ("editorH", EDITOR_BASE_H)));
+
+        const juce::String savedDevice = beatTree.getProperty ("midiOutDevice", "").toString();
+
+        if (savedDevice != getMidiOutputIdentifier())
+        {
+            // Only reopen if that device is actually present on this machine
+            const auto devices = getMidiOutputDevices();
+            const bool stillAvailable = savedDevice.isNotEmpty()
+                && std::any_of (devices.begin(), devices.end(),
+                                [&] (const juce::MidiDeviceInfo& d) { return d.identifier == savedDevice; });
+
+            setMidiOutputDevice (stillAvailable ? savedDevice : juce::String());
+        }
     }
 }
 

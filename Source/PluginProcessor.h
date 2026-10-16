@@ -6,33 +6,9 @@
 
 static constexpr int MAX_BEATS = 16;
 
-// Built-in preview sound types
-enum class SoundType
-{
-    Sine = 0,
-    Triangle,
-    Square,
-    Saw,
-    Click,
-    Noise,
-    NumTypes
-};
-
-static constexpr int NUM_SOUND_TYPES = (int)SoundType::NumTypes;
-
-inline juce::String soundTypeName (SoundType t)
-{
-    switch (t)
-    {
-        case SoundType::Sine:     return "SINE";
-        case SoundType::Triangle: return "TRI";
-        case SoundType::Square:   return "SQR";
-        case SoundType::Saw:      return "SAW";
-        case SoundType::Click:    return "CLICK";
-        case SoundType::Noise:    return "NOISE";
-        default:                  return "?";
-    }
-}
+// Default editor size — the editor scales this layout to whatever size the user drags to
+static constexpr int EDITOR_BASE_W = 1024;
+static constexpr int EDITOR_BASE_H = 580;
 
 //==============================================================================
 class PolyrhythmProcessor : public juce::AudioProcessor
@@ -52,9 +28,11 @@ public:
     bool hasEditor() const override { return true; }
 
     const juce::String getName() const override { return JucePlugin_Name; }
+    // These have to agree with the flags on the CMake target, or the wrapper and the
+    // processor disagree about what kind of plugin this is
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return true; }
-    bool isMidiEffect() const override { return false; }
+    bool isMidiEffect() const override { return (bool) JucePlugin_IsMidiEffect; }
     double getTailLengthSeconds() const override { return 0.0; }
 
     int getNumPrograms() override { return 1; }
@@ -80,12 +58,23 @@ public:
     std::array<std::atomic<float>, MAX_BEATS> trackAGate;    // per-beat gate 0-1
     std::array<std::atomic<float>, MAX_BEATS> trackBGate;
 
-    // Per-track preview sound type
-    std::atomic<int> trackASoundType { (int)SoundType::Sine };
-    std::atomic<int> trackBSoundType { (int)SoundType::Triangle };
+    // Send per-beat LP cutoff as MIDI CC74 (Brightness). Off by default: when on, a CC
+    // event is emitted for every note, which clutters recorded regions and moves the
+    // filter on whatever instrument sits downstream.
+    std::atomic<bool> sendCutoffCC { false };
 
-    // Audio preview toggle
-    std::atomic<bool> audioPreviewEnabled { true };
+    //==========================================================================
+    // Direct MIDI output (e.g. an IAC Driver bus), independent of the host's own MIDI
+    // routing. Lets any DAW track record the generated MIDI whatever slot we're in.
+    static juce::Array<juce::MidiDeviceInfo> getMidiOutputDevices();
+    void         setMidiOutputDevice (const juce::String& identifier);
+    juce::String getMidiOutputIdentifier() const;
+    juce::String getMidiOutputName() const;
+
+    //==========================================================================
+    // Editor size, persisted with the rest of the plugin state
+    std::atomic<int> editorWidth  { EDITOR_BASE_W };
+    std::atomic<int> editorHeight { EDITOR_BASE_H };
 
     //==========================================================================
     // Parameters (automatable)
@@ -126,6 +115,17 @@ private:
     double sampleRateVal  = 44100.0;
     bool   wasPlaying     = false;
 
+    // PPQ cursor for the scheduler. The window we search for beats runs from where the
+    // previous block finished up to the end of this block, rather than from this block's
+    // reported start. Host-reported positions rarely tile exactly: a gap silently drops
+    // beats, an overlap fires them twice. Both show up as wrong notes in a recording.
+    double nextPpq             = 0.0;
+    bool   ppqCursorValid      = false;
+
+    // A jump larger than this (in quarter notes) means the transport looped or relocated
+    // rather than advanced normally, so the cursor is resynced instead of catching up.
+    static constexpr double ppqDiscontinuity = 0.25;
+
     // Pending note-offs that extend past the current audio block
     struct PendingNoteOff
     {
@@ -135,34 +135,69 @@ private:
     };
     std::vector<PendingNoteOff> pendingNoteOffs;
 
+    // Last CC74 value sent per MIDI channel (1-16), so the CC is only emitted on change.
+    // -1 = nothing sent yet.
+    std::array<int, 17> lastCutoffCC {};
+
     void processTrack (bool        isTrackA,
                        double      barLengthPpq,
+                       double      windowStartPpq,
+                       double      windowEndPpq,
                        double      blockStartPpq,
-                       double      blockEndPpq,
                        double      ppqPerSample,
                        int         numSamples,
                        juce::MidiBuffer& midiOut);
 
+    void flushPendingNoteOffs (juce::MidiBuffer& midiOut, int sampleOffset);
+    void resetCutoffCC();
+
+    // Only ever fed the notes this plugin generates. Echoing the pass-through input here
+    // creates a feedback loop the moment the DAW is listening to the same port: our own
+    // output returns as input and is sent straight back out again.
+    void queueForExternalMidiOut (const juce::MidiBuffer& generated);
+    void drainMidiOutQueue();
+    void publishGeneratedMidi (juce::MidiBuffer& hostBuffer, int numSamples);
+
+    // Everything generated this block, kept separate from the host's buffer so the two
+    // destinations can be fed different things
+    juce::MidiBuffer generatedMidi;
+
     juce::Random random;
 
-    // Synth voice for built-in audio preview
-    struct SynthVoice
-    {
-        double    phase      = 0.0;
-        double    inc        = 0.0;   // phase increment per sample
-        float     amp        = 0.0f;
-        bool      active     = false;
-        SoundType type       = SoundType::Sine;
-        int       clickCount = 0;     // samples remaining for click type
-        // Simple one-pole low-pass filter state
-        float     lpCutoff   = 1.0f;  // 0-1
-        float     lpState    = 0.0f;
-    };
-    static constexpr int NUM_VOICES = 16;
-    std::array<SynthVoice, NUM_VOICES> voices {};
+    //==========================================================================
+    // Direct MIDI output device. Opened/closed on the message thread, read on the audio
+    // thread, so access is guarded. Messages go out via the device's own background
+    // thread rather than being written from processBlock directly.
+    mutable juce::CriticalSection     midiOutLock;
+    std::unique_ptr<juce::MidiOutput> midiOutDevice;
+    juce::String                      midiOutIdentifier;
 
-    void triggerVoice (double frequency, SoundType type, float cutoff);
-    void renderVoices (juce::AudioBuffer<float>& buffer);
+    // Checked by the audio thread instead of taking the lock
+    std::atomic<bool> midiOutActive { false };
+
+    /*  Generated messages cross to the sender thread through a lock-free queue. Calling
+        MidiOutput::sendBlockOfMessages() straight from processBlock takes a lock and
+        allocates, which is enough to stall the audio thread and produce dropouts in
+        whatever instrument is downstream.
+    */
+    struct QueuedMidi
+    {
+        juce::uint8 bytes[3] {};
+        juce::uint8 size = 0;
+    };
+
+    static constexpr int midiOutQueueSize = 2048;
+    juce::AbstractFifo                      midiOutFifo { midiOutQueueSize };
+    std::array<QueuedMidi, midiOutQueueSize> midiOutQueue {};
+
+    struct MidiOutSender : juce::HighResolutionTimer
+    {
+        explicit MidiOutSender (PolyrhythmProcessor& o) : owner (o) {}
+        void hiResTimerCallback() override { owner.drainMidiOutQueue(); }
+        PolyrhythmProcessor& owner;
+    };
+
+    MidiOutSender midiOutSender { *this };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (PolyrhythmProcessor)
 };
