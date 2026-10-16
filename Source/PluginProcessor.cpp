@@ -3,6 +3,13 @@
 #include <algorithm>
 
 //==============================================================================
+// Parameters the processor (and through uiStateVersion, the editor) reacts to
+static constexpr const char* kListenedParams[] = {
+    "trackA_beats", "trackB_beats", "trackA_channel", "trackB_channel",
+    "trackA_gate",  "trackB_gate",  "trackA_velocity", "trackB_velocity",
+    "trackA_lpf",   "trackB_lpf"
+};
+
 /*  The same sources build two plugins:
 
       - a MIDI effect (AU 'aumi') for Logic's MIDI FX slot, with no audio buses
@@ -21,8 +28,7 @@ PolyrhythmProcessor::PolyrhythmProcessor()
       ),
       apvts (*this, nullptr, "Parameters", createParameterLayout())
 {
-    for (auto* id : { "trackA_beats", "trackB_beats", "trackA_channel", "trackB_channel",
-                      "trackA_gate", "trackB_gate" })
+    for (auto* id : kListenedParams)
         apvts.addParameterListener (id, this);
 
     for (size_t i = 0; i < MAX_BEATS; ++i)
@@ -44,8 +50,7 @@ PolyrhythmProcessor::PolyrhythmProcessor()
 
 PolyrhythmProcessor::~PolyrhythmProcessor()
 {
-    for (auto* id : { "trackA_beats", "trackB_beats", "trackA_channel", "trackB_channel",
-                      "trackA_gate", "trackB_gate" })
+    for (auto* id : kListenedParams)
         apvts.removeParameterListener (id, this);
 
     midiOutSender.stopTimer();
@@ -74,6 +79,12 @@ PolyrhythmProcessor::createParameterLayout()
     params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackA_gate",    1 }, "Track A Gate",           0.01f, 1.0f, 0.5f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackB_gate",    1 }, "Track B Gate",           0.01f, 1.0f, 0.5f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "probability",    1 }, "Probability",            0.0f,  1.0f,  1.0f));
+    // Track-level velocity and LPF, added after version 1. Like the track gate, each sets
+    // every per-beat value on its track.
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackA_velocity", 2 }, "Track A Velocity",      0.01f, 1.0f, 0.8f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackB_velocity", 2 }, "Track B Velocity",      0.01f, 1.0f, 0.8f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackA_lpf",      2 }, "Track A LPF",           0.0f,  1.0f, 1.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackB_lpf",      2 }, "Track B LPF",           0.0f,  1.0f, 1.0f));
 
     return { params.begin(), params.end() };
 }
@@ -81,18 +92,24 @@ PolyrhythmProcessor::createParameterLayout()
 //==============================================================================
 /*  Can run on the audio thread under automation, so this only stores atomics.
 
-    The track gate sets every per-beat gate on its track, whether it moves from the
-    editor or from host automation. On a project load the parameters are restored before
-    the beat tree, so saved per-beat gates still win over the track gate.
+    The track gate, velocity and LPF each set every per-beat value on their track,
+    whether they move from the editor or from host automation. On a project load the
+    parameters are restored before the beat tree, so saved per-beat values still win.
 */
 void PolyrhythmProcessor::parameterChanged (const juce::String& parameterID, float newValue)
 {
-    if (parameterID == "trackA_gate" || parameterID == "trackB_gate")
+    auto setAll = [newValue] (std::array<std::atomic<float>, MAX_BEATS>& arr)
     {
-        auto& gates = parameterID == "trackA_gate" ? trackAGate : trackBGate;
-        for (auto& g : gates)
-            g.store (newValue);
-    }
+        for (auto& v : arr)
+            v.store (newValue);
+    };
+
+    if      (parameterID == "trackA_gate")     setAll (trackAGate);
+    else if (parameterID == "trackB_gate")     setAll (trackBGate);
+    else if (parameterID == "trackA_velocity") setAll (trackAVelocity);
+    else if (parameterID == "trackB_velocity") setAll (trackBVelocity);
+    else if (parameterID == "trackA_lpf")      setAll (trackACutoff);
+    else if (parameterID == "trackB_lpf")      setAll (trackBCutoff);
 
     uiStateVersion.fetch_add (1);
 }
@@ -106,29 +123,149 @@ int   PolyrhythmProcessor::getTrackBChannel()   const { return (int)*apvts.getRa
 int   PolyrhythmProcessor::getTrackANote()      const { return trackANotes[0].load(); }
 int   PolyrhythmProcessor::getTrackBNote()      const { return trackBNotes[0].load(); }
 
-void  PolyrhythmProcessor::shiftTrackANotes (int semitones)
+void  PolyrhythmProcessor::shiftTrackANotes (int steps)
 {
     for (auto& n : trackANotes)
-        n.store (juce::jlimit (0, 127, n.load() + semitones));
+        n.store (stepNote (n.load(), steps));
 }
-void  PolyrhythmProcessor::shiftTrackBNotes (int semitones)
+void  PolyrhythmProcessor::shiftTrackBNotes (int steps)
 {
     for (auto& n : trackBNotes)
-        n.store (juce::jlimit (0, 127, n.load() + semitones));
+        n.store (stepNote (n.load(), steps));
 }
 void  PolyrhythmProcessor::resetTrackANotes()
 {
     for (auto& n : trackANotes)
-        n.store (36);   // C2
+        n.store (snapToScale (36));   // C2
 }
 void  PolyrhythmProcessor::resetTrackBNotes()
 {
     for (auto& n : trackBNotes)
-        n.store (38);   // D2
+        n.store (snapToScale (38));   // D2
+}
+
+//==============================================================================
+// Scale lock. Keep the order and steps in step with SCALES in docs/index.html.
+const std::array<PolyrhythmProcessor::Scale, 12>& PolyrhythmProcessor::getScales()
+{
+    static const std::array<Scale, 12> scales {{
+        { "Major (Ionian)",   7, { 0, 2, 4, 5, 7, 9, 11 } },
+        { "Minor (Aeolian)",  7, { 0, 2, 3, 5, 7, 8, 10 } },
+        { "Dorian",           7, { 0, 2, 3, 5, 7, 9, 10 } },
+        { "Phrygian",         7, { 0, 1, 3, 5, 7, 8, 10 } },
+        { "Lydian",           7, { 0, 2, 4, 6, 7, 9, 11 } },
+        { "Mixolydian",       7, { 0, 2, 4, 5, 7, 9, 10 } },
+        { "Locrian",          7, { 0, 1, 3, 5, 6, 8, 10 } },
+        { "Harmonic minor",   7, { 0, 2, 3, 5, 7, 8, 11 } },
+        { "Melodic minor",    7, { 0, 2, 3, 5, 7, 9, 11 } },
+        { "Major pentatonic", 5, { 0, 2, 4, 7, 9 } },
+        { "Minor pentatonic", 5, { 0, 3, 5, 7, 10 } },
+        { "Blues",            6, { 0, 3, 5, 6, 7, 10 } },
+    }};
+    return scales;
+}
+
+bool PolyrhythmProcessor::isInScale (int note) const
+{
+    if (! scaleEnabled.load())
+        return true;
+
+    const auto& scale  = getScales()[(size_t) juce::jlimit (0, 11, scaleType.load())];
+    const int   degree = ((note - scaleRoot.load()) % 12 + 12) % 12;
+
+    for (int i = 0; i < scale.numSteps; ++i)
+        if (scale.steps[i] == degree)
+            return true;
+
+    return false;
+}
+
+int PolyrhythmProcessor::snapToScale (int note) const
+{
+    for (int d = 0; d < 12; ++d)
+    {
+        if (note - d >= 0   && isInScale (note - d)) return note - d;
+        if (note + d <= 127 && isInScale (note + d)) return note + d;
+    }
+    return note;
+}
+
+int PolyrhythmProcessor::stepNote (int note, int delta) const
+{
+    if (delta == 0)
+        return note;
+
+    // Repeat for multi-step deltas, one degree at a time
+    const int dir = delta > 0 ? 1 : -1;
+    for (int s = 0; s < std::abs (delta); ++s)
+    {
+        int m = note;
+        do { m += dir; } while (m >= 0 && m <= 127 && ! isInScale (m));
+
+        if (m < 0 || m > 127)
+            break;   // no further scale note in this direction
+        note = m;
+    }
+    return note;
+}
+
+void PolyrhythmProcessor::randomiseTrack (bool isTrackA, RandomTarget what)
+{
+    auto& notes  = isTrackA ? trackANotes    : trackBNotes;
+    auto& vels   = isTrackA ? trackAVelocity : trackBVelocity;
+    auto& gates  = isTrackA ? trackAGate     : trackBGate;
+    auto& cuts   = isTrackA ? trackACutoff   : trackBCutoff;
+    const int count = juce::jlimit (1, MAX_BEATS, isTrackA ? getTrackABeatCount()
+                                                           : getTrackBBeatCount());
+    const bool all = what == RandomTarget::all;
+
+    // Separate from the audio thread's generator, which drives probability
+    juce::Random rng;
+    auto range = [&rng] (float lo, float hi) { return lo + rng.nextFloat() * (hi - lo); };
+
+    if (all || what == RandomTarget::notes)
+    {
+        // Within an octave centred on the current notes, so repeated presses wander rather
+        // than jump registers. In key when the scale lock is on.
+        int sum = 0;
+        for (int i = 0; i < count; ++i)
+            sum += notes[(size_t) i].load();
+        const int centre = (int) std::lround ((double) sum / count);
+
+        for (int i = 0; i < count; ++i)
+            notes[(size_t) i].store (snapToScale (juce::jlimit (0, 127, centre - 6 + rng.nextInt (13))));
+    }
+
+    // Lower limits keep a beat from going silent or fully muffled. Same ranges as the web.
+    for (int i = 0; i < count; ++i)
+    {
+        if (all || what == RandomTarget::velocity) vels [(size_t) i].store (range (0.35f, 1.0f));
+        if (all || what == RandomTarget::gate)     gates[(size_t) i].store (range (0.1f,  1.0f));
+        if (all || what == RandomTarget::cutoff)   cuts [(size_t) i].store (range (0.2f,  1.0f));
+    }
+
+    markBeatStateEdited();
+    uiStateVersion.fetch_add (1);
+}
+
+void PolyrhythmProcessor::snapAllNotesToScale()
+{
+    if (! scaleEnabled.load())
+        return;
+
+    for (auto* arr : { &trackANotes, &trackBNotes })
+        for (auto& n : *arr)
+            n.store (snapToScale (n.load()));
+
+    markBeatStateEdited();
 }
 float PolyrhythmProcessor::getSwing()           const { return *apvts.getRawParameterValue ("swing"); }
 float PolyrhythmProcessor::getTrackAGate()      const { return *apvts.getRawParameterValue ("trackA_gate"); }
 float PolyrhythmProcessor::getTrackBGate()      const { return *apvts.getRawParameterValue ("trackB_gate"); }
+float PolyrhythmProcessor::getTrackAVelocity()  const { return *apvts.getRawParameterValue ("trackA_velocity"); }
+float PolyrhythmProcessor::getTrackBVelocity()  const { return *apvts.getRawParameterValue ("trackB_velocity"); }
+float PolyrhythmProcessor::getTrackACutoff()    const { return *apvts.getRawParameterValue ("trackA_lpf"); }
+float PolyrhythmProcessor::getTrackBCutoff()    const { return *apvts.getRawParameterValue ("trackB_lpf"); }
 float PolyrhythmProcessor::getProbability()     const { return *apvts.getRawParameterValue ("probability"); }
 
 //==============================================================================
@@ -619,6 +756,9 @@ void PolyrhythmProcessor::getStateInformation (juce::MemoryBlock& destData)
         beatTree.setProperty ("bGate"   + juce::String ((int)i), trackBGate[i].load(),     nullptr);
     }
     beatTree.setProperty ("sendCutoffCC",  sendCutoffCC.load(),      nullptr);
+    beatTree.setProperty ("scaleOn",       scaleEnabled.load(),      nullptr);
+    beatTree.setProperty ("scaleRoot",     scaleRoot.load(),         nullptr);
+    beatTree.setProperty ("scaleType",     scaleType.load(),         nullptr);
     beatTree.setProperty ("midiOutDevice", getMidiOutputIdentifier(), nullptr);
     beatTree.setProperty ("editorW",       editorWidth.load(),       nullptr);
     beatTree.setProperty ("editorH",       editorHeight.load(),      nullptr);
@@ -667,6 +807,10 @@ void PolyrhythmProcessor::setStateInformation (const void* data, int sizeInBytes
         }
 
         sendCutoffCC.store ((bool) beatTree.getProperty ("sendCutoffCC", false));
+        scaleEnabled.store ((bool) beatTree.getProperty ("scaleOn", false));
+        scaleRoot.store    (juce::jlimit (0, 11, (int) beatTree.getProperty ("scaleRoot", 0)));
+        scaleType.store    (juce::jlimit (0, (int) getScales().size() - 1,
+                                          (int) beatTree.getProperty ("scaleType", 0)));
         editorWidth.store  (juce::jmax (EDITOR_BASE_W / 2,
                                         (int) beatTree.getProperty ("editorW", EDITOR_BASE_W)));
         editorHeight.store (juce::jmax (EDITOR_BASE_H / 2,

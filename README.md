@@ -12,7 +12,10 @@ A polyrhythm MIDI generator available as a **JUCE audio plugin** (AU/VST3) and a
 
 - **Two independent rhythm tracks** (RHYTHM_A / RHYTHM_B) with 1-16 beats each
 - **Per-beat controls** — toggle active state, set individual MIDI notes, velocities and gate lengths
-- **Global note selector** — scroll wheel / touch swipe to shift all beats on a track by semitone
+- **Global note selector**: scroll wheel, click and drag, or touch swipe to shift all beats on a track
+- **Scale lock**: pick a root and scale (major, minor, the modes, pentatonics, blues) and every note snaps to it and steps by scale degree. Switch it off to go chromatic again
+- **Randomise**: per rhythm or both at once, re-roll notes, velocity, gate, LPF or all of them. Active steps, beat counts and the bar stay as they are, and notes stay in key when the scale lock is on
+- **Track-level gate, velocity and low-pass**: each sets every beat on its track, then fine-tune per beat
 - **Swing** — pushes odd-numbered beats forward for groove
 - **Probability** — random chance to skip beats for generative variation
 - **Gate control** — adjustable note length per track and per beat
@@ -87,16 +90,19 @@ Both builds auto-install to `~/Library/Audio/Plug-Ins/` on macOS. Look for **Pol
 | Control | Description | Where |
 |---------|-------------|-------|
 | **BEATS** | Number of beats per bar (1-16) | Both |
-| **NOTE** | Global note for all beats — scroll to change | Both |
-| **GATE** | Note duration as fraction of beat interval | Both |
+| **NOTE** | Global note for all beats: scroll, click, or click and drag up or down | Both |
+| **SCALE** | Lock notes to a root and scale; off keeps the notes and goes chromatic | Both |
+| **GATE** | Note duration as fraction of beat interval (track and per beat) | Both |
 | **SWING** | Offset for odd-numbered beats (0-50%) | Both |
 | **PROB** | Probability each beat fires (0-100%) | Both |
-| **LPF** | Per-beat low-pass brightness | Both |
-| **VEL** | Per-beat velocity | Both |
+| **LPF** | Low-pass brightness (track and per beat) | Both |
+| **VEL** | Note velocity (track and per beat) | Both |
+| **BPM** | Tempo: scroll, click, or click and drag up or down (the plugin follows the DAW) | Web |
 | **SOUND** | Preview sound type — Sine, Tri, Sqr, Saw, Click, Noise | Web |
 | **CH nn** | MIDI output channel for the track — click to change | Plugin |
 | **CC74** | Send the per-beat LPF value as MIDI CC74 | Plugin |
 | **MIDI OUT** | Send generated MIDI to a port directly, bypassing host routing | Plugin |
+| **RND** / **RANDOM** | Randomise notes, velocity, gate, LPF or all, on one rhythm (RND) or both (RANDOM) | Both |
 | **RESET** | Restore all settings to defaults | Both |
 
 ### Keyboard Shortcuts (Web)

@@ -548,6 +548,102 @@ int main()
     }
 
     //--------------------------------------------------------------------------
+    // Track velocity and LPF behave like the track gate
+    std::printf ("\nCase 13: track velocity and LPF set every beat on their track\n");
+    {
+        PolyrhythmProcessor proc;
+        setParam (proc, "trackA_velocity", 0.3f);
+        setParam (proc, "trackB_lpf",      0.25f);
+
+        bool velSet = true, lpfSet = true;
+        for (const auto& v : proc.trackAVelocity) velSet = velSet && std::abs (v.load() - 0.3f)  < 1.0e-4f;
+        for (const auto& c : proc.trackBCutoff)   lpfSet = lpfSet && std::abs (c.load() - 0.25f) < 1.0e-4f;
+
+        check (velSet, "velocity: every track A beat velocity follows the parameter");
+        check (lpfSet, "lpf: every track B beat cutoff follows the parameter");
+        check (std::abs (proc.trackBVelocity[0].load() - 0.8f) < 1.0e-4f,
+               "velocity: track B is left alone");
+        check (std::abs (proc.trackACutoff[0].load() - 1.0f) < 1.0e-4f,
+               "lpf: track A is left alone");
+    }
+
+    //--------------------------------------------------------------------------
+    std::printf ("\nCase 14: scale lock snaps, steps by degree and is saved\n");
+    {
+        PolyrhythmProcessor proc;
+        proc.scaleRoot.store (5);   // F
+        proc.scaleType.store (3);   // Phrygian: F Gb Ab Bb C Db Eb
+
+        check (proc.stepNote (40, 1) == 41, "unlocked: steps are semitones");
+
+        proc.scaleEnabled.store (true);
+        check (proc.snapToScale (40) == 39, "snap: E ties between Eb and F and goes down to Eb");
+        check (proc.snapToScale (36) == 36, "snap: C is in F Phrygian and stays");
+        check (proc.stepNote (36, 1) == 37, "step: C up one degree is Db");
+        check (proc.stepNote (37, 1) == 39, "step: Db up one degree is Eb, skipping D");
+        check (proc.stepNote (41, -2) == 37, "step: F down two degrees is Db");
+        check (proc.stepNote (127, 1) == 127, "step: stays put with no scale note above");
+
+        proc.trackANotes[0].store (40);
+        proc.trackBNotes[0].store (38);   // D, not in the scale
+        proc.snapAllNotesToScale();
+        check (proc.trackANotes[0].load() == 39 && proc.trackBNotes[0].load() == 37,
+               "snap all: both tracks move into the scale");
+
+        juce::MemoryBlock saved;
+        proc.getStateInformation (saved);
+        PolyrhythmProcessor loaded;
+        loaded.setStateInformation (saved.getData(), (int) saved.getSize());
+        check (loaded.scaleEnabled.load() && loaded.scaleRoot.load() == 5 && loaded.scaleType.load() == 3,
+               "load: scale lock, root and type are restored");
+    }
+
+    //--------------------------------------------------------------------------
+    std::printf ("\nCase 15: randomise changes only the chosen values on the beats in use\n");
+    {
+        using RT = PolyrhythmProcessor::RandomTarget;
+        PolyrhythmProcessor proc;   // track A: 4 beats, track B: 3
+        proc.trackAActive[1].store (false);
+
+        proc.randomiseTrack (true, RT::velocity);
+
+        bool velChanged = false, othersKept = true;
+        for (size_t i = 0; i < 4; ++i)
+        {
+            const float v = proc.trackAVelocity[i].load();
+            velChanged = velChanged || std::abs (v - 0.8f) > 1.0e-4f;
+            othersKept = othersKept && v >= 0.35f && v <= 1.0f
+                         && proc.trackANotes[i].load() == 36
+                         && std::abs (proc.trackAGate[i].load() - 0.5f) < 1.0e-4f
+                         && std::abs (proc.trackACutoff[i].load() - 1.0f) < 1.0e-4f;
+        }
+        check (velChanged, "velocity: at least one track A velocity changed");
+        check (othersKept, "velocity: in range, and notes, gate and LPF untouched");
+        check (! proc.trackAActive[1].load() && proc.trackAActive[0].load(),
+               "velocity: active steps are kept");
+        check (std::abs (proc.trackAVelocity[5].load() - 0.8f) < 1.0e-4f,
+               "velocity: beats past the beat count are left alone");
+        check (std::abs (proc.trackBVelocity[0].load() - 0.8f) < 1.0e-4f,
+               "velocity: track B is left alone");
+
+        proc.scaleRoot.store (5);
+        proc.scaleType.store (3);
+        proc.scaleEnabled.store (true);
+        proc.randomiseTrack (false, RT::all);
+
+        bool inKey = true, inRange = true;
+        for (size_t i = 0; i < 3; ++i)
+        {
+            const int n = proc.trackBNotes[i].load();
+            inKey   = inKey && proc.isInScale (n);
+            inRange = inRange && n >= 38 - 7 && n <= 38 + 7;
+        }
+        check (inKey,   "all: every randomised note is in the locked scale");
+        check (inRange, "all: notes stay within about an octave of where they were");
+        check (proc.getTrackBBeatCount() == 3, "all: the beat count is unchanged");
+    }
+
+    //--------------------------------------------------------------------------
     std::printf ("\n%s (%d failure%s)\n",
                  failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED",
                  failures, failures == 1 ? "" : "s");
