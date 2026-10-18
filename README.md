@@ -99,9 +99,9 @@ Both builds auto-install to `~/Library/Audio/Plug-Ins/` on macOS. Look for **Pol
 | **VEL** | Note velocity (track and per beat) | Both |
 | **BPM** | Tempo: scroll, click, or click and drag up or down (the plugin follows the DAW) | Web |
 | **SOUND** | Preview sound type — Sine, Tri, Sqr, Saw, Click, Noise | Web |
-| **CH nn** | MIDI output channel for the track — click to change | Plugin |
-| **CC74** | Send the per-beat LPF value as MIDI CC74 | Plugin |
-| **MIDI OUT** | Send generated MIDI to a port directly, bypassing host routing | Plugin |
+| **CH nn** | MIDI output channel for the track: click to change | Both |
+| **CC74** | Send the per-beat LPF value as MIDI CC74 | Both |
+| **MIDI OUT** | Pick the MIDI output port (the plugin sends to it directly, bypassing host routing) | Both |
 | **RND** / **RANDOM** | Randomise notes, velocity, gate, LPF or all, on one rhythm (RND) or both (RANDOM) | Both |
 | **RESET** | Restore all settings to defaults | Both |
 
