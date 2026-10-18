@@ -65,6 +65,32 @@ public:
     std::atomic<bool> sendCutoffCC { false };
 
     //==========================================================================
+    // Scale lock, shared by both tracks. Not a parameter: changing it rewrites notes, which
+    // has to happen on the message thread. Saved with the beat state.
+    struct Scale
+    {
+        const char* name;
+        int         numSteps;
+        int         steps[7];   // semitone offsets from the root
+    };
+    static const std::array<Scale, 12>& getScales();
+
+    std::atomic<bool> scaleEnabled { false };
+    std::atomic<int>  scaleRoot    { 0 };   // 0-11, C = 0
+    std::atomic<int>  scaleType    { 0 };   // index into getScales()
+
+    bool isInScale   (int note) const;
+    int  snapToScale (int note) const;          // nearest in-scale note, ties go down
+    int  stepNote    (int note, int delta) const; // one semitone, or one degree when locked
+    void snapAllNotesToScale();                 // message thread only
+
+    //==========================================================================
+    // Randomise per-beat values on the beats in use. Active steps, beat counts and the
+    // bar are left alone. Message thread only.
+    enum class RandomTarget { notes, velocity, gate, cutoff, all };
+    void randomiseTrack (bool isTrackA, RandomTarget what);
+
+    //==========================================================================
     // Direct MIDI output (e.g. an IAC Driver bus), independent of the host's own MIDI
     // routing. Lets any DAW track record the generated MIDI whatever slot we're in.
     static juce::Array<juce::MidiDeviceInfo> getMidiOutputDevices();
@@ -89,14 +115,19 @@ public:
     // Global note getters read beat 0 (used for the "all" display in the UI)
     int   getTrackANote()       const;
     int   getTrackBNote()       const;
-    // Shift all beats on a track by a semitone delta
-    void  shiftTrackANotes (int semitones);
-    void  shiftTrackBNotes (int semitones);
+    // Step every beat on a track up or down: by semitone, or by scale degree when the
+    // scale lock is on
+    void  shiftTrackANotes (int steps);
+    void  shiftTrackBNotes (int steps);
     void  resetTrackANotes();
     void  resetTrackBNotes();
     float getSwing()            const;
     float getTrackAGate()       const;
     float getTrackBGate()       const;
+    float getTrackAVelocity()   const;
+    float getTrackBVelocity()   const;
+    float getTrackACutoff()     const;
+    float getTrackBCutoff()     const;
     float getProbability()      const;
 
     // Bumped whenever state changes from outside the editor (a project load, automation of

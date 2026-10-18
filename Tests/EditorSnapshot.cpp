@@ -69,6 +69,15 @@ int main (int argc, char* argv[])
     shoot (proc, dir, "05-16beats-512x290",  EDITOR_BASE_W / 2, EDITOR_BASE_H / 2);
     shoot (proc, dir, "06-16beats-2048x1160", EDITOR_BASE_W * 2, EDITOR_BASE_H * 2);
 
+    // Scale lock on (F Phrygian), so the header shows the active state
+    proc.scaleRoot.store (5);
+    proc.scaleType.store (3);
+    proc.scaleEnabled.store (true);
+    proc.snapAllNotesToScale();
+
+    std::printf ("\nScale lock on, F Phrygian\n");
+    shoot (proc, dir, "07-scale-on-1024x580", EDITOR_BASE_W, EDITOR_BASE_H);
+
     std::printf ("\nSnapshots in %s\n\n", dir.getFullPathName().toRawUTF8());
     return 0;
 }
