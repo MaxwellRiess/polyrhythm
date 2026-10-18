@@ -38,6 +38,7 @@ A polyrhythm MIDI generator available as a **JUCE audio plugin** (AU/VST3) and a
 - Per-track MIDI channel selection (defaults: track A on channel 1, track B on channel 2)
 - Resizable window — drag the corner to scale the whole interface up or down
 - Optional direct MIDI output to any port (e.g. an IAC bus) for recording into a DAW track
+- Per-rhythm output: switch each rhythm on or off, and give each its own MIDI port to record them on separate tracks
 - Optional CC74 output for the per-beat low-pass value, off by default
 - macOS / Linux
 
@@ -99,9 +100,12 @@ Both builds auto-install to `~/Library/Audio/Plug-Ins/` on macOS. Look for **Pol
 | **VEL** | Note velocity (track and per beat) | Both |
 | **BPM** | Tempo: scroll, click, or click and drag up or down (the plugin follows the DAW) | Web |
 | **SOUND** | Preview sound type — Sine, Tri, Sqr, Saw, Click, Noise | Web |
-| **CH nn** | MIDI output channel for the track — click to change | Plugin |
-| **CC74** | Send the per-beat LPF value as MIDI CC74 | Plugin |
-| **MIDI OUT** | Send generated MIDI to a port directly, bypassing host routing | Plugin |
+| **CH nn** | MIDI output channel for the track: click to change | Both |
+| **CC74** | Send the per-beat LPF value as MIDI CC74 | Both |
+| **MIDI OUT** | Pick the MIDI output port (the plugin sends to it directly, bypassing host routing) | Both |
+| **OUT: MAIN** / **MAIN** | Per-rhythm MIDI port; MAIN follows MIDI OUT, or pick a port just for this rhythm | Both |
+| **ON** | Switch a rhythm on or off (automatable) | Plugin |
+| **AUDIO** / **MIDI** (per rhythm) | Switch a rhythm's preview sound or its MIDI on or off | Web |
 | **RND** / **RANDOM** | Randomise notes, velocity, gate, LPF or all, on one rhythm (RND) or both (RANDOM) | Both |
 | **RESET** | Restore all settings to defaults | Both |
 
@@ -139,6 +143,11 @@ track, so the instrument build is no help here either.
    Driver** and tick *Device is online*.
 2. In the plugin header, click **MIDI OUT** and pick the IAC bus.
 3. Make a **separate** track whose input is that IAC bus, arm it, and record.
+
+To record each rhythm on its own track, add a second IAC bus (the **+** in the IAC Driver
+window). Leave rhythm A on **OUT: MAIN**, click rhythm B's **OUT: MAIN** button and pick the
+second bus. Then make one track per bus. Each rhythm also has its own MIDI channel, so in a
+DAW that can filter input by channel you can do the same with a single bus.
 
 Costs a little timing jitter through the IAC bus. Leave **CC74** off while recording unless
 you actually want filter data written into the region.

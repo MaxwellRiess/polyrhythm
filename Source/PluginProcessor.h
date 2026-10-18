@@ -98,6 +98,15 @@ public:
     juce::String getMidiOutputIdentifier() const;
     juce::String getMidiOutputName() const;
 
+    // A rhythm can have a port of its own (say IAC Bus 2 for rhythm B), so each rhythm
+    // records onto its own DAW track. Without one it follows the main port above.
+    void         setTrackMidiOutputDevice (bool isTrackA, const juce::String& identifier);
+    juce::String getTrackMidiOutputIdentifier (bool isTrackA) const;
+    juce::String getTrackMidiOutputName (bool isTrackA) const;
+
+    // Whether a rhythm plays at all. An automatable parameter, read here for the editor.
+    bool isTrackOn (bool isTrackA) const;
+
     //==========================================================================
     // Editor size, persisted with the rest of the plugin state
     std::atomic<int> editorWidth  { EDITOR_BASE_W };
@@ -177,6 +186,7 @@ private:
         int samplesRemaining;
         int channel;
         int note;
+        int track;   // 0 = A, 1 = B, so the note-off follows its rhythm's routing
     };
     std::vector<PendingNoteOff> pendingNoteOffs;
 
@@ -194,32 +204,45 @@ private:
                        int         numSamples,
                        juce::MidiBuffer& midiOut);
 
-    void flushPendingNoteOffs (juce::MidiBuffer& midiOut, int sampleOffset);
+    void flushPendingNoteOffs (int sampleOffset);
     void resetCutoffCC();
 
     // Only ever fed the notes this plugin generates. Echoing the pass-through input here
     // creates a feedback loop the moment the DAW is listening to the same port: our own
     // output returns as input and is sent straight back out again.
-    void queueForExternalMidiOut (const juce::MidiBuffer& generated, int numSamples);
+    void queueForExternalMidiOut (int numSamples);
     void drainMidiOutQueue (bool discardAll = false);
     void publishGeneratedMidi (juce::MidiBuffer& hostBuffer, int numSamples);
 
-    // Everything generated this block, kept separate from the host's buffer so the two
-    // destinations can be fed different things
-    juce::MidiBuffer generatedMidi;
+    // Everything generated this block, one buffer per rhythm, kept separate from the
+    // host's buffer so each rhythm can be routed to its own external port
+    std::array<juce::MidiBuffer, 2> generatedMidi;
 
     juce::Random random;
 
     //==========================================================================
-    // Direct MIDI output device. Opened/closed on the message thread, read on the audio
-    // thread, so access is guarded. Messages go out via the device's own background
-    // thread rather than being written from processBlock directly.
-    mutable juce::CriticalSection     midiOutLock;
-    std::unique_ptr<juce::MidiOutput> midiOutDevice;
-    juce::String                      midiOutIdentifier;
+    // Direct MIDI output devices: the main port, then one per rhythm. Opened/closed on
+    // the message thread, read by the sender thread, so access is guarded. Messages go
+    // out via a background thread rather than being written from processBlock directly.
+    enum PortSlot { mainPort = 0, trackAPort = 1, trackBPort = 2, numPortSlots = 3 };
 
-    // Checked by the audio thread instead of taking the lock
-    std::atomic<bool> midiOutActive { false };
+    struct OutputPort
+    {
+        std::unique_ptr<juce::MidiOutput> device;
+        juce::String                      identifier;
+        std::atomic<bool>                 active { false };   // read by the audio thread
+    };
+
+    mutable juce::CriticalSection         midiOutLock;
+    std::array<OutputPort, numPortSlots>  outputPorts;
+
+    void         setPortDevice (int slot, const juce::String& identifier);
+    juce::String getPortIdentifier (int slot) const;
+    juce::String getPortName (int slot) const;
+    void         restorePortDevice (int slot, const juce::String& savedIdentifier);
+
+    // The slot a rhythm's messages go to right now, or -1 for none
+    int destinationSlot (int track) const;
 
     /*  Generated messages cross to the sender thread through a lock-free queue. Calling
         MidiOutput::sendBlockOfMessages() straight from processBlock takes a lock and
@@ -230,6 +253,7 @@ private:
     {
         juce::uint8 bytes[3] {};
         juce::uint8 size     = 0;
+        juce::uint8 port     = 0;     // PortSlot to send to
         double      sendAtMs = 0.0;   // Time::getMillisecondCounterHiRes() clock
     };
 

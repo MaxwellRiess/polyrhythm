@@ -210,6 +210,14 @@ private:
     // Randomise menu for this track
     juce::TextButton randomBtn { "RND" };
 
+    // Per-rhythm output: on/off (an automatable parameter) and this rhythm's own MIDI port
+    juce::TextButton onBtn { "ON" };
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> onAttach;
+    juce::TextButton portBtn;
+
+    void showPortMenu();
+    void updatePortButton();
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (RhythmTrackComponent)
 };
 

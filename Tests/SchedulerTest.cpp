@@ -11,6 +11,9 @@
         cmake --build build --target SchedulerTest && ./build/SchedulerTest_artefacts/SchedulerTest
 */
 
+#ifdef __APPLE__
+ #include <CoreFoundation/CoreFoundation.h>   // before JUCE, whose Point clashes with MacTypes
+#endif
 #include <JuceHeader.h>
 #include "../Source/PluginProcessor.h"
 #include <cstdio>
@@ -641,6 +644,162 @@ int main()
         check (inKey,   "all: every randomised note is in the locked scale");
         check (inRange, "all: notes stay within about an octave of where they were");
         check (proc.getTrackBBeatCount() == 3, "all: the beat count is unchanged");
+    }
+
+    //--------------------------------------------------------------------------
+    /*  A rhythm switched off starts no notes, and switching it off mid-note still lets the
+        held note close, so nothing hangs on the instrument.
+    */
+    std::printf ("\nCase 16: a rhythm switched off is silent and leaves no hanging notes\n");
+    {
+        FakePlayHead ph; ph.bpm = bpm;
+        std::unique_ptr<PolyrhythmProcessor> proc;
+        makeProcessor (proc, ph);
+
+        // Rhythm B's downbeat is held when it is switched off a quarter of a beat in
+        auto before = runTransport (*proc, ph, 0.25, blockSize, sampleRate);
+        setParam (*proc, "trackB_on", 0.0f);
+        auto after  = runTransport (*proc, ph, twoBars - 0.25, blockSize, sampleRate);
+
+        int bOnsAfter = 0, bOns = 0, bOffs = 0;
+        for (const auto* cap : { &before, &after })
+            for (const auto& e : cap->noteEvents)
+                if (e.channel == 2)
+                {
+                    (e.on ? bOns : bOffs) += 1;
+                    if (e.on && cap == &after) ++bOnsAfter;
+                }
+
+        check (bOnsAfter == 0,
+               "on/off: no rhythm B notes once it is off, got " + juce::String (bOnsAfter));
+        check (bOns == 1 && bOffs == 1,
+               "on/off: the note held when it went off still closes ("
+                   + juce::String (bOns) + " on, " + juce::String (bOffs) + " off)");
+        check (after.onsPerChannel[1] + before.onsPerChannel[1] == 8,
+               "on/off: rhythm A carries on, got "
+                   + juce::String (after.onsPerChannel[1] + before.onsPerChannel[1]));
+    }
+
+    //--------------------------------------------------------------------------
+    /*  Each rhythm on its own port. Two virtual MIDI destinations stand in for IAC buses,
+        so this checks what actually arrives at each port rather than what was queued.
+    */
+    std::printf ("\nCase 17: each rhythm reaches only its own MIDI port\n");
+    {
+        struct Collector : juce::MidiInputCallback
+        {
+            juce::CriticalSection lock;
+            std::map<int, int> onsPerChannel;
+
+            void handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage& m) override
+            {
+                if (! m.isNoteOn()) return;
+                const juce::ScopedLock sl (lock);
+                ++onsPerChannel[m.getChannel()];
+            }
+
+            std::map<int, int> snapshot() { const juce::ScopedLock sl (lock); return onsPerChannel; }
+        };
+
+        Collector gotA, gotB;
+        auto portA = juce::MidiInput::createNewDevice ("PolyTest A", &gotA);
+        auto portB = juce::MidiInput::createNewDevice ("PolyTest B", &gotB);
+
+        // CoreMIDI announces a new device on the main run loop, which this test never
+        // runs on its own, so spin it briefly until the device shows up
+        auto findOutput = [] (const juce::String& name)
+        {
+            for (int attempt = 0; attempt < 20; ++attempt)
+            {
+                for (const auto& d : juce::MidiOutput::getAvailableDevices())
+                    if (d.name == name)
+                        return d.identifier;
+
+               #if JUCE_MAC
+                CFRunLoopRunInMode (kCFRunLoopDefaultMode, 0.05, false);
+               #else
+                juce::Thread::sleep (50);
+               #endif
+            }
+            return juce::String();
+        };
+
+        const auto idA = findOutput ("PolyTest A");
+        const auto idB = findOutput ("PolyTest B");
+
+        if (portA == nullptr || portB == nullptr || idA.isEmpty() || idB.isEmpty())
+        {
+            std::printf ("  [SKIP] virtual MIDI ports are not available here\n");
+        }
+        else
+        {
+            portA->start();
+            portB->start();
+
+            {
+                FakePlayHead ph; ph.bpm = bpm;
+                std::unique_ptr<PolyrhythmProcessor> proc;
+                makeProcessor (proc, ph);
+
+                proc->setTrackMidiOutputDevice (true,  idA);
+                proc->setTrackMidiOutputDevice (false, idB);
+
+                runTransport (*proc, ph, twoBars, blockSize, sampleRate);
+                juce::Thread::sleep (1500);   // let the sender thread deliver everything
+
+                auto a = gotA.snapshot();
+                auto b = gotB.snapshot();
+
+                check (a[1] == 8 && a[2] == 0,
+                       "ports: rhythm A's port gets only rhythm A (" + juce::String (a[1])
+                           + " on ch 1, " + juce::String (a[2]) + " on ch 2)");
+                check (b[2] == 6 && b[1] == 0,
+                       "ports: rhythm B's port gets only rhythm B (" + juce::String (b[2])
+                           + " on ch 2, " + juce::String (b[1]) + " on ch 1)");
+
+                // The ports are saved with the project and reopened on load
+                juce::MemoryBlock saved;
+                proc->getStateInformation (saved);
+
+                PolyrhythmProcessor loaded;
+                loaded.setStateInformation (saved.getData(), (int) saved.getSize());
+
+                check (loaded.getTrackMidiOutputIdentifier (true) == idA
+                           && loaded.getTrackMidiOutputIdentifier (false) == idB,
+                       "ports: each rhythm's port is restored from the project");
+            }
+
+            //------------------------------------------------------------------
+            // A rhythm without a port of its own follows the main port
+            Collector gotMain;
+            auto portMain = juce::MidiInput::createNewDevice ("PolyTest Main", &gotMain);
+            const auto idMain = findOutput ("PolyTest Main");
+
+            if (portMain != nullptr && idMain.isNotEmpty())
+            {
+                portMain->start();
+                const auto beforeA = gotA.snapshot();
+
+                FakePlayHead ph; ph.bpm = bpm;
+                std::unique_ptr<PolyrhythmProcessor> proc;
+                makeProcessor (proc, ph);
+
+                proc->setMidiOutputDevice (idMain);
+                proc->setTrackMidiOutputDevice (true, idA);
+
+                runTransport (*proc, ph, twoBars, blockSize, sampleRate);
+                juce::Thread::sleep (1500);
+
+                auto main = gotMain.snapshot();
+                auto a    = gotA.snapshot();
+
+                check (main[2] == 6 && main[1] == 0,
+                       "ports: rhythm B falls back to the main port (" + juce::String (main[2])
+                           + " on ch 2, " + juce::String (main[1]) + " on ch 1)");
+                check (a[1] - beforeA.at (1) == 8,
+                       "ports: rhythm A still uses its own port");
+            }
+        }
     }
 
     //--------------------------------------------------------------------------
