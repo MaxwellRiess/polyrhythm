@@ -421,7 +421,46 @@
   .sound-menu.open .sound-menu-dropdown,
   .rnd-menu.open .sound-menu-dropdown,
   .ch-menu.open .sound-menu-dropdown,
+  .port-menu.open .sound-menu-dropdown,
   .midi-menu.open .sound-menu-dropdown { display: block; }
+
+  /* Per-rhythm output: audio and MIDI on/off, and which MIDI port this rhythm uses */
+  .out-toggle {
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    height: 28px;
+    padding: 0 10px;
+    color: var(--text-dim);
+    background: var(--beat-bg);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .out-toggle:hover { border-color: var(--text-dim); }
+  .out-toggle.active {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .port-menu {
+    position: relative;
+    display: flex;
+  }
+  /* Fixed width, so a long port name truncates instead of reflowing the track controls */
+  .port-menu .sound-menu-btn { width: 70px; min-width: 70px; gap: 4px; }
+  .port-menu .sound-menu-btn span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .port-menu .sound-menu-dropdown {
+    min-width: 180px;
+    max-width: 80vw;
+  }
+  .port-menu .sound-menu-item {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   /* MIDI channel menu (per track) and MIDI output port menu (footer) */
   .ch-menu,
@@ -864,6 +903,8 @@
     .transport .rnd-menu .transport-btn { flex: 1; }
     .rnd-track-btn { min-height: 36px; padding: 0 12px; font-size: 11px; }
     .channel-badge { padding: 0 12px; min-height: 36px; font-size: 11px; }
+    .out-toggle { height: 36px; padding: 0 12px; }
+    .port-menu .sound-menu-btn { height: 36px; }
     .ch-menu .sound-menu-dropdown { max-height: 50vh; }
     /* Keep MIDI OUT on the right when the footer wraps, so its menu stays on screen */
     .midi-menu { margin-left: auto; }
@@ -1183,6 +1224,18 @@
           </button>
           <div class="sound-menu-dropdown"></div>
         </div>
+      <div class="control-row">
+        <span class="ctrl-label">OUTPUT</span>
+        <button class="out-toggle" id="trackA-audioOn" data-track="A" data-out="audio" title="Play this rhythm through the built-in sounds">AUDIO</button>
+        <button class="out-toggle" id="trackA-midiOn" data-track="A" data-out="midi" title="Send this rhythm over MIDI">MIDI</button>
+        <div class="port-menu" data-track="A">
+          <button class="sound-menu-btn" title="MIDI port for this rhythm. MAIN follows MIDI OUT in the footer.">
+            <span id="trackA-port">MAIN</span>
+            <span class="chevron">&#9662;</span>
+          </button>
+          <div class="sound-menu-dropdown"></div>
+        </div>
+      </div>
       </div>
       <div class="track-sliders">
         <div class="control-row">
@@ -1244,6 +1297,18 @@
           </button>
           <div class="sound-menu-dropdown"></div>
         </div>
+      <div class="control-row">
+        <span class="ctrl-label">OUTPUT</span>
+        <button class="out-toggle" id="trackB-audioOn" data-track="B" data-out="audio" title="Play this rhythm through the built-in sounds">AUDIO</button>
+        <button class="out-toggle" id="trackB-midiOn" data-track="B" data-out="midi" title="Send this rhythm over MIDI">MIDI</button>
+        <div class="port-menu" data-track="B">
+          <button class="sound-menu-btn" title="MIDI port for this rhythm. MAIN follows MIDI OUT in the footer.">
+            <span id="trackB-port">MAIN</span>
+            <span class="chevron">&#9662;</span>
+          </button>
+          <div class="sound-menu-dropdown"></div>
+        </div>
+      </div>
       </div>
       <div class="track-sliders">
         <div class="control-row">
@@ -1348,6 +1413,9 @@ const state = {
   trackA: {
     beatCount: 4,
     channel: 0,    // MIDI channel 0-indexed (displayed as CH 01)
+    audioOn: true, // this rhythm plays through the built-in sounds
+    midiOn: true,  // this rhythm is sent over MIDI
+    portId: '',    // '' = MAIN (the footer MIDI OUT port), else a Web MIDI output id
     gate: 0.5,     // track-level default (sets all beats)
     velocity: 0.8, // track-level default (sets all beats)
     cutoff: 1.0,   // track-level default (sets all beats)
@@ -1363,6 +1431,9 @@ const state = {
   trackB: {
     beatCount: 3,
     channel: 1,
+    audioOn: true,
+    midiOn: true,
+    portId: '',
     gate: 0.5,
     velocity: 0.8,
     cutoff: 1.0,
@@ -1407,12 +1478,19 @@ let midiAccess = null;
 let midiOutput = null;
 let midiEnabled = false;
 let midiRequested = false;
-// Last CC74 value sent per MIDI channel (0-15), so the CC is only emitted on change.
-// Matches PolyrhythmProcessor::lastCutoffCC; -1 means nothing sent yet.
-const lastCutoffCC = new Array(16).fill(-1);
+// Last CC74 value sent per port and MIDI channel, so the CC is only emitted on change.
+// Matches PolyrhythmProcessor::lastCutoffCC. Keyed "portId:channel"; missing = nothing sent.
+const lastCutoffCC = new Map();
 
 function resetCutoffCC() {
-  lastCutoffCC.fill(-1);
+  lastCutoffCC.clear();
+}
+
+// The port a rhythm sends to. MAIN follows the footer choice. A rhythm's own port that
+// has gone missing means no output for that rhythm, but the id is kept so it reconnects.
+function trackMidiOutput(track) {
+  if (!track.portId) return midiOutput;
+  return midiOutputs().find(o => o.id === track.portId) || null;
 }
 
 function midiOutputs() {
@@ -1432,6 +1510,8 @@ function applyMidiOutput() {
   midiOutput = out;
   midiEnabled = !!out;
   updateMidiUI();
+  updateOutputDisplay('A');
+  updateOutputDisplay('B');
 }
 
 function updateMidiUI() {
@@ -1494,33 +1574,31 @@ async function initMidi() {
   }
 }
 
-function sendMidiCC(channel, controller, value) {
-  if (!midiEnabled || !midiOutput) return;
-  midiOutput.send([0xB0 | (channel & 0x0F), controller & 0x7F, value & 0x7F]);
+// Each send names its port, since the two rhythms can go to different ones. A port
+// that has been unplugged since the note was scheduled throws, which is ignored.
+function sendMidi(out, bytes) {
+  if (!out) return;
+  try { out.send(bytes); } catch (e) {}
 }
 
-function sendMidiNoteOn(channel, note, velocity) {
-  if (!midiEnabled || !midiOutput) return;
-  midiOutput.send([0x90 | (channel & 0x0F), note & 0x7F, velocity & 0x7F]);
-}
-
-function sendMidiNoteOff(channel, note) {
-  if (!midiEnabled || !midiOutput) return;
-  midiOutput.send([0x80 | (channel & 0x0F), note & 0x7F, 0]);
+function sendMidiNoteOff(out, channel, note) {
+  sendMidi(out, [0x80 | (channel & 0x0F), note & 0x7F, 0]);
 }
 
 // Optional LP cutoff as CC74 (Brightness) just before the note-on, only when the
-// value changed on that channel. Sending it on every note floods recorded regions.
-function sendBeatMidi(channel, note, velocity, cutoff) {
+// value changed on that port and channel. Sending it on every note floods recorded regions.
+function sendBeatMidi(out, channel, note, velocity, cutoff) {
+  if (!out) return;
+  const ch = channel & 0x0F;
   if (state.sendCutoffCC) {
     const ccVal = Math.max(0, Math.min(127, Math.floor((cutoff ?? 1.0) * 127)));
-    const ch = channel & 0x0F;
-    if (ccVal !== lastCutoffCC[ch]) {
-      lastCutoffCC[ch] = ccVal;
-      sendMidiCC(ch, 74, ccVal);
+    const key = out.id + ':' + ch;
+    if (ccVal !== lastCutoffCC.get(key)) {
+      lastCutoffCC.set(key, ccVal);
+      sendMidi(out, [0xB0 | ch, 74, ccVal]);
     }
   }
-  sendMidiNoteOn(channel, note, velocity);
+  sendMidi(out, [0x90 | ch, note & 0x7F, velocity & 0x7F]);
 }
 
 // ── Sequencer Engine ─────────────────────────────────────
@@ -1622,6 +1700,9 @@ function resetPlayback() {
 
   state.trackA.beatCount = 4;
   state.trackA.channel = 0;
+  state.trackA.audioOn = true;
+  state.trackA.midiOn = true;
+  state.trackA.portId = '';
   state.trackA.gate = 0.5;
   state.trackA.velocity = 0.8;
   state.trackA.cutoff = 1.0;
@@ -1636,6 +1717,9 @@ function resetPlayback() {
 
   state.trackB.beatCount = 3;
   state.trackB.channel = 1;
+  state.trackB.audioOn = true;
+  state.trackB.midiOn = true;
+  state.trackB.portId = '';
   state.trackB.gate = 0.5;
   state.trackB.velocity = 0.8;
   state.trackB.cutoff = 1.0;
@@ -1675,6 +1759,8 @@ function resetPlayback() {
   updateTrackSoundDisplay('B');
   updateChannelDisplay('A');
   updateChannelDisplay('B');
+  updateOutputDisplay('A');
+  updateOutputDisplay('B');
   updateMidiUI();
 
   // Sync sound menu selection state
@@ -1762,17 +1848,20 @@ function scheduleTrack(track, isTrackA, barLengthPpq, fromPpq, toPpq, audioNow, 
         const gateDuration = beatData.gate * (beatInterval / ppqPerSecond);
 
         // Audio preview: convert MIDI note to frequency, use track sound type + cutoff
-        if (state.audioEnabled) {
+        if (state.audioEnabled && track.audioOn) {
           const freq = 440 * Math.pow(2, (note - 69) / 12);
           scheduleVoiceAt(beatAudioTime, freq, beatData.velocity, track.soundType, gateDuration, beatData.cutoff);
         }
 
-        // MIDI output
-        if (midiEnabled) {
+        // MIDI output, to this rhythm's own port. The note-off goes to the same port as
+        // its note-on even if the routing changes in between, so nothing is left hanging.
+        const out = track.midiOn ? trackMidiOutput(track) : null;
+        if (out) {
+          const channel = track.channel;
           const delayMs = Math.max(0, (beatAudioTime - audioCtx.currentTime) * 1000);
           setTimeout(() => {
-            sendBeatMidi(track.channel, note, velocity, beatData.cutoff);
-            setTimeout(() => sendMidiNoteOff(track.channel, note), gateDuration * 1000);
+            sendBeatMidi(out, channel, note, velocity, beatData.cutoff);
+            setTimeout(() => sendMidiNoteOff(out, channel, note), gateDuration * 1000);
           }, delayMs);
         }
 
@@ -2205,6 +2294,31 @@ function init() {
     });
   });
 
+  // ── Per-rhythm output ─────────────────────────────────────
+  document.querySelectorAll('.out-toggle').forEach(btn => {
+    const trackId = btn.dataset.track;
+    const track = trackId === 'A' ? state.trackA : state.trackB;
+    const key = btn.dataset.out === 'audio' ? 'audioOn' : 'midiOn';
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track[key] = !track[key];
+      updateOutputDisplay(trackId);
+      saveState();
+    });
+  });
+  document.querySelectorAll('.port-menu').forEach(menu => {
+    const trackId = menu.dataset.track;
+    menu.querySelector('button').addEventListener('click', (e) => {
+      e.stopPropagation();
+      initMidi();
+      buildPortMenu(trackId);
+      closeMenus(menu);
+      menu.classList.toggle('open');
+    });
+  });
+  updateOutputDisplay('A');
+  updateOutputDisplay('B');
+
   // ── MIDI Channel Menus ────────────────────────────────────
   document.querySelectorAll('.ch-menu').forEach(menu => {
     const trackId = menu.dataset.track;
@@ -2468,7 +2582,7 @@ function updateAllPadCutoffs(trackId) {
 }
 
 // ── Menu and channel helpers ─────────────────────────────
-const MENU_SELECTOR = '.sound-menu.open, .rnd-menu.open, .ch-menu.open, .midi-menu.open';
+const MENU_SELECTOR = '.sound-menu.open, .rnd-menu.open, .ch-menu.open, .port-menu.open, .midi-menu.open';
 function closeMenus(except) {
   document.querySelectorAll(MENU_SELECTOR).forEach(m => {
     if (m !== except) m.classList.remove('open');
@@ -2488,6 +2602,56 @@ function updateChannelDisplay(trackId) {
     it.classList.toggle('selected', j === track.channel));
 }
 
+function updateOutputDisplay(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  document.getElementById(`track${trackId}-audioOn`)?.classList.toggle('active', track.audioOn);
+  document.getElementById(`track${trackId}-midiOn`)?.classList.toggle('active', track.midiOn);
+
+  const label = document.getElementById(`track${trackId}-port`);
+  if (label) {
+    let text = 'MAIN';
+    if (track.portId) {
+      const out = midiOutputs().find(o => o.id === track.portId);
+      text = out ? (out.name || out.id) : (midiAccess ? 'PORT MISSING' : 'SAVED PORT');
+    }
+    label.textContent = text;
+    label.parentElement.title = text;
+  }
+  buildPortMenu(trackId);
+}
+
+function buildPortMenu(trackId) {
+  const track = trackId === 'A' ? state.trackA : state.trackB;
+  const menu = document.querySelector(`.port-menu[data-track="${trackId}"]`);
+  const dropdown = menu?.querySelector('.sound-menu-dropdown');
+  if (!dropdown) return;
+  dropdown.innerHTML = '';
+
+  const addItem = (label, id, selected, enabled = true) => {
+    const item = document.createElement('div');
+    item.className = 'sound-menu-item' + (selected ? ' selected' : '');
+    item.textContent = label;
+    item.title = label;
+    if (!enabled) item.style.pointerEvents = 'none';
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      track.portId = id;
+      resetCutoffCC();
+      updateOutputDisplay(trackId);
+      saveState();
+      menu.classList.remove('open');
+    });
+    dropdown.appendChild(item);
+  };
+
+  addItem('MAIN (MIDI OUT)', '', !track.portId);
+  const outs = midiOutputs();
+  outs.forEach(o => addItem(o.name || o.id, o.id, o.id === track.portId));
+  if (!navigator.requestMIDIAccess) addItem('WEB MIDI NOT SUPPORTED', track.portId, false, false);
+  else if (!midiAccess) addItem('START TO FIND PORTS', track.portId, false, false);
+  else if (outs.length === 0) addItem('NO PORTS FOUND', track.portId, false, false);
+}
+
 // ── State Persistence (localStorage) ─────────────────────
 function saveState() {
   try {
@@ -2502,6 +2666,9 @@ function saveState() {
       trackA: {
         beatCount: state.trackA.beatCount,
         channel: state.trackA.channel,
+        audioOn: state.trackA.audioOn,
+        midiOn: state.trackA.midiOn,
+        portId: state.trackA.portId,
         gate: state.trackA.gate,
         velocity: state.trackA.velocity,
         cutoff: state.trackA.cutoff,
@@ -2511,6 +2678,9 @@ function saveState() {
       trackB: {
         beatCount: state.trackB.beatCount,
         channel: state.trackB.channel,
+        audioOn: state.trackB.audioOn,
+        midiOn: state.trackB.midiOn,
+        portId: state.trackB.portId,
         gate: state.trackB.gate,
         velocity: state.trackB.velocity,
         cutoff: state.trackB.cutoff,
@@ -2539,6 +2709,9 @@ function loadState() {
     if (data.trackA) {
       state.trackA.beatCount = data.trackA.beatCount ?? 4;
       state.trackA.channel = clampChannel(data.trackA.channel, 0);
+      state.trackA.audioOn = data.trackA.audioOn ?? true;
+      state.trackA.midiOn = data.trackA.midiOn ?? true;
+      state.trackA.portId = typeof data.trackA.portId === 'string' ? data.trackA.portId : '';
       state.trackA.gate = data.trackA.gate ?? 0.5;
       state.trackA.velocity = data.trackA.velocity ?? 0.8;
       state.trackA.cutoff = data.trackA.cutoff ?? 1.0;
@@ -2552,6 +2725,9 @@ function loadState() {
     if (data.trackB) {
       state.trackB.beatCount = data.trackB.beatCount ?? 3;
       state.trackB.channel = clampChannel(data.trackB.channel, 1);
+      state.trackB.audioOn = data.trackB.audioOn ?? true;
+      state.trackB.midiOn = data.trackB.midiOn ?? true;
+      state.trackB.portId = typeof data.trackB.portId === 'string' ? data.trackB.portId : '';
       state.trackB.gate = data.trackB.gate ?? 0.5;
       state.trackB.velocity = data.trackB.velocity ?? 0.8;
       state.trackB.cutoff = data.trackB.cutoff ?? 1.0;
