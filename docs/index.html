@@ -1391,9 +1391,36 @@ function sendMidiNoteOff(channel, note) {
 // to achieve sample-accurate timing, similar to the JUCE PPQ approach
 
 let schedulerTimer = null;
-let startTime = 0;       // audioContext time when playback started
-let currentPpq = 0;      // current position in PPQ (quarter notes)
 let lastScheduledPpq = 0;
+
+// Tempo anchor. Position is counted from the last tempo change, not from START, so a
+// new BPM changes the speed from here on. Counting from START rescaled all the time
+// played so far, which jumped the playhead and fired bursts of catch-up notes.
+let anchorTime = 0;      // audioContext time of the last start or tempo change
+let anchorPpq  = 0;      // position in PPQ (quarter notes) at anchorTime
+
+function ppqAtTime(t) {
+  return anchorPpq + (t - anchorTime) * state.bpm / 60;
+}
+
+function timeAtPpq(ppq) {
+  return anchorTime + (ppq - anchorPpq) * 60 / state.bpm;
+}
+
+// Every BPM change goes through here so playback keeps its place
+function setBpm(bpm) {
+  const next = Math.max(20, Math.min(300, Math.round(bpm)));
+  if (next === state.bpm) return;
+
+  if (state.playing && audioCtx) {
+    const now = audioCtx.currentTime;
+    anchorPpq  = ppqAtTime(now);
+    anchorTime = now;
+  }
+
+  state.bpm = next;
+  updateBpmDisplay();
+}
 
 const LOOKAHEAD_MS = 25;     // how often to check (ms)
 const SCHEDULE_AHEAD = 0.05; // how far ahead to schedule (seconds)
@@ -1408,8 +1435,8 @@ function startPlayback() {
   if (state.playing) return;
   ensureAudioCtx();
   state.playing = true;
-  startTime = audioCtx.currentTime;
-  currentPpq = 0;
+  anchorTime = audioCtx.currentTime;
+  anchorPpq = 0;
   lastScheduledPpq = 0;
   trackALastBarStart = -1;
   trackBLastBarStart = -1;
@@ -1440,14 +1467,14 @@ function stopPlayback() {
 
 function resetPlayback() {
   stopPlayback();
-  currentPpq = 0;
+  anchorPpq = 0;
   lastScheduledPpq = 0;
 
   // Clear persisted state
   try { localStorage.removeItem('polyrhythm_state'); } catch (e) {}
 
   // Reset global state to defaults
-  state.bpm = 120;
+  setBpm(120);
   state.swing = 0;
   state.probability = 1;
   state.audioEnabled = true;
@@ -1520,15 +1547,10 @@ function scheduler() {
 
   const ctx = ensureAudioCtx();
   const now = ctx.currentTime;
-  const elapsed = now - startTime;
-
-  // Convert elapsed time to PPQ
   const ppqPerSecond = state.bpm / 60;
-  const currentPpqNow = elapsed * ppqPerSecond;
 
   // Schedule ahead
-  const scheduleUntilTime = now + SCHEDULE_AHEAD;
-  const scheduleUntilPpq = (scheduleUntilTime - startTime) * ppqPerSecond;
+  const scheduleUntilPpq = ppqAtTime(now + SCHEDULE_AHEAD);
 
   // Bar length in PPQ (assuming 4/4)
   const barLengthPpq = 4.0;
@@ -1586,9 +1608,7 @@ function scheduleTrack(track, isTrackA, barLengthPpq, fromPpq, toPpq, audioNow, 
         if (prob < 1.0 && Math.random() > prob) continue;
 
         // Calculate the exact audio time for this beat
-        const beatTimeOffset = (beatPpq - (audioNow - (audioNow - startTime) * 0 ));
-        // More precise: convert PPQ position to absolute time
-        const beatAudioTime = startTime + beatPpq / ppqPerSecond;
+        const beatAudioTime = timeAtPpq(beatPpq);
 
         const velocity = Math.round(beatData.velocity * 127);
         const note = beatData.note;
@@ -1724,9 +1744,7 @@ function handleTap() {
       totalInterval += tapTimes[i] - tapTimes[i - 1];
     }
     const avgInterval = totalInterval / (tapTimes.length - 1);
-    const bpm = Math.round(60000 / avgInterval);
-    state.bpm = Math.max(20, Math.min(300, bpm));
-    updateBpmDisplay();
+    setBpm(60000 / avgInterval);
   }
 }
 
@@ -1880,8 +1898,7 @@ function init() {
   bpmScroll.addEventListener('wheel', (e) => {
     e.preventDefault();
     const delta = e.deltaY < 0 ? 1 : -1;
-    state.bpm = Math.max(20, Math.min(300, state.bpm + delta));
-    updateBpmDisplay();
+    setBpm(state.bpm + delta);
   }, { passive: false });
   {
     let touchY = null, acc = 0;
@@ -1891,21 +1908,19 @@ function init() {
       e.preventDefault();
       const dy = touchY - e.touches[0].clientY;
       acc += dy; touchY = e.touches[0].clientY;
-      while (acc >= 15) { state.bpm = Math.min(300, state.bpm + 1); acc -= 15; updateBpmDisplay(); }
-      while (acc <= -15) { state.bpm = Math.max(20, state.bpm - 1); acc += 15; updateBpmDisplay(); }
+      while (acc >= 15) { setBpm(state.bpm + 1); acc -= 15; }
+      while (acc <= -15) { setBpm(state.bpm - 1); acc += 15; }
     }, { passive: false });
     bpmScroll.addEventListener('touchend', () => { touchY = null; });
   }
   attachVerticalDrag(bpmScroll, 4, (delta) => {
-    state.bpm = Math.max(20, Math.min(300, state.bpm + delta));
-    updateBpmDisplay();
+    setBpm(state.bpm + delta);
   });
   bpmScroll.addEventListener('click', (e) => {
     if (bpmScroll.dataset.dragged) return;
     const rect = bpmScroll.getBoundingClientRect();
     const delta = (e.clientY - rect.top) < rect.height / 2 ? 1 : -1;
-    state.bpm = Math.max(20, Math.min(300, state.bpm + delta));
-    updateBpmDisplay();
+    setBpm(state.bpm + delta);
   });
 
   // Global sliders
