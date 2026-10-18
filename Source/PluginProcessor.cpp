@@ -7,7 +7,7 @@
 static constexpr const char* kListenedParams[] = {
     "trackA_beats", "trackB_beats", "trackA_channel", "trackB_channel",
     "trackA_gate",  "trackB_gate",  "trackA_velocity", "trackB_velocity",
-    "trackA_lpf",   "trackB_lpf"
+    "trackA_lpf",   "trackB_lpf",   "trackA_on",       "trackB_on"
 };
 
 /*  The same sources build two plugins:
@@ -54,7 +54,8 @@ PolyrhythmProcessor::~PolyrhythmProcessor()
         apvts.removeParameterListener (id, this);
 
     midiOutSender.stopTimer();
-    setMidiOutputDevice ({});
+    for (int slot = 0; slot < numPortSlots; ++slot)
+        setPortDevice (slot, {});
 }
 
 //==============================================================================
@@ -85,6 +86,10 @@ PolyrhythmProcessor::createParameterLayout()
     params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackB_velocity", 2 }, "Track B Velocity",      0.01f, 1.0f, 0.8f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackA_lpf",      2 }, "Track A LPF",           0.0f,  1.0f, 1.0f));
     params.push_back (std::make_unique<juce::AudioParameterFloat>(PID { "trackB_lpf",      2 }, "Track B LPF",           0.0f,  1.0f, 1.0f));
+
+    // Per-rhythm on/off, so a rhythm can be muted or recorded on its own
+    params.push_back (std::make_unique<juce::AudioParameterBool> (PID { "trackA_on",       3 }, "Track A On",            true));
+    params.push_back (std::make_unique<juce::AudioParameterBool> (PID { "trackB_on",       3 }, "Track B On",            true));
 
     return { params.begin(), params.end() };
 }
@@ -269,14 +274,16 @@ float PolyrhythmProcessor::getTrackBCutoff()    const { return *apvts.getRawPara
 float PolyrhythmProcessor::getProbability()     const { return *apvts.getRawParameterValue ("probability"); }
 
 //==============================================================================
-// Direct MIDI output device
+// Direct MIDI output devices
 juce::Array<juce::MidiDeviceInfo> PolyrhythmProcessor::getMidiOutputDevices()
 {
     return juce::MidiOutput::getAvailableDevices();
 }
 
-void PolyrhythmProcessor::setMidiOutputDevice (const juce::String& identifier)
+void PolyrhythmProcessor::setPortDevice (int slot, const juce::String& identifier)
 {
+    auto& port = outputPorts[(size_t) slot];
+
     std::unique_ptr<juce::MidiOutput> newDevice;
 
     if (identifier.isNotEmpty())
@@ -285,15 +292,22 @@ void PolyrhythmProcessor::setMidiOutputDevice (const juce::String& identifier)
     std::unique_ptr<juce::MidiOutput> previous;
     {
         const juce::ScopedLock sl (midiOutLock);
-        previous          = std::move (midiOutDevice);
-        midiOutDevice     = std::move (newDevice);
-        midiOutIdentifier = (midiOutDevice != nullptr) ? identifier : juce::String();
+        previous        = std::move (port.device);
+        port.device     = std::move (newDevice);
+        port.identifier = (port.device != nullptr) ? identifier : juce::String();
+        port.active.store (port.device != nullptr, std::memory_order_relaxed);
     }
 
-    const bool active = midiOutIdentifier.isNotEmpty();
-    midiOutActive.store (active, std::memory_order_relaxed);
+    // Notes started on the old port would never get their note-off once the routing moves
+    // elsewhere, so close them before letting it go
+    if (previous != nullptr)
+        for (const int channel : { getTrackAChannel(), getTrackBChannel() })
+            previous->sendMessageNow (juce::MidiMessage::allNotesOff (channel));
 
-    if (active)
+    const bool anyActive = std::any_of (outputPorts.begin(), outputPorts.end(),
+                                        [] (const OutputPort& p) { return p.active.load(); });
+
+    if (anyActive)
     {
         // 1 ms drain. Messages are held until their timestamp, so this is also the timing
         // resolution of the external port. The IAC bus adds jitter of its own, so chasing
@@ -310,11 +324,80 @@ void PolyrhythmProcessor::setMidiOutputDevice (const juce::String& identifier)
     previous.reset();
 }
 
-//==============================================================================
-void PolyrhythmProcessor::queueForExternalMidiOut (const juce::MidiBuffer& generated,
-                                                   int numSamples)
+juce::String PolyrhythmProcessor::getPortIdentifier (int slot) const
 {
-    if (! midiOutActive.load (std::memory_order_relaxed))
+    const juce::ScopedLock sl (midiOutLock);
+    return outputPorts[(size_t) slot].identifier;
+}
+
+juce::String PolyrhythmProcessor::getPortName (int slot) const
+{
+    const juce::ScopedLock sl (midiOutLock);
+    const auto& device = outputPorts[(size_t) slot].device;
+    return device != nullptr ? device->getName() : juce::String();
+}
+
+// Reopens a port from a saved project, but only if that device exists on this machine
+void PolyrhythmProcessor::restorePortDevice (int slot, const juce::String& savedIdentifier)
+{
+    if (savedIdentifier == getPortIdentifier (slot))
+        return;
+
+    const auto devices = getMidiOutputDevices();
+    const bool stillAvailable = savedIdentifier.isNotEmpty()
+        && std::any_of (devices.begin(), devices.end(),
+                        [&] (const juce::MidiDeviceInfo& d) { return d.identifier == savedIdentifier; });
+
+    setPortDevice (slot, stillAvailable ? savedIdentifier : juce::String());
+}
+
+int PolyrhythmProcessor::destinationSlot (int track) const
+{
+    const int own = track == 0 ? trackAPort : trackBPort;
+
+    if (outputPorts[(size_t) own].active.load (std::memory_order_relaxed))
+        return own;
+
+    if (outputPorts[mainPort].active.load (std::memory_order_relaxed))
+        return mainPort;
+
+    return -1;
+}
+
+void PolyrhythmProcessor::setMidiOutputDevice (const juce::String& identifier)   { setPortDevice (mainPort, identifier); }
+juce::String PolyrhythmProcessor::getMidiOutputIdentifier() const                { return getPortIdentifier (mainPort); }
+juce::String PolyrhythmProcessor::getMidiOutputName() const                      { return getPortName (mainPort); }
+
+void PolyrhythmProcessor::setTrackMidiOutputDevice (bool isTrackA, const juce::String& identifier)
+{
+    setPortDevice (isTrackA ? trackAPort : trackBPort, identifier);
+}
+
+juce::String PolyrhythmProcessor::getTrackMidiOutputIdentifier (bool isTrackA) const
+{
+    return getPortIdentifier (isTrackA ? trackAPort : trackBPort);
+}
+
+juce::String PolyrhythmProcessor::getTrackMidiOutputName (bool isTrackA) const
+{
+    return getPortName (isTrackA ? trackAPort : trackBPort);
+}
+
+bool PolyrhythmProcessor::isTrackOn (bool isTrackA) const
+{
+    return *apvts.getRawParameterValue (isTrackA ? "trackA_on" : "trackB_on") >= 0.5f;
+}
+
+//==============================================================================
+/*  Queues both rhythms' messages for the sender thread, each tagged with its rhythm's
+    port. The two buffers are merged by sample position: the sender stops at the first
+    message that is not due yet, so the queue has to stay in time order.
+*/
+void PolyrhythmProcessor::queueForExternalMidiOut (int numSamples)
+{
+    const int dest[2] = { destinationSlot (0), destinationSlot (1) };
+
+    if (dest[0] < 0 && dest[1] < 0)
     {
         midiClockValid = false;
         return;
@@ -332,24 +415,38 @@ void PolyrhythmProcessor::queueForExternalMidiOut (const juce::MidiBuffer& gener
     const double blockStartMs = nextBlockMs;
     nextBlockMs += juce::jmax (0, numSamples) * msPerSmp;
 
-    for (const auto meta : generated)
+    auto push = [&] (const juce::MidiMessageMetadata& meta, int port)
     {
-        if (meta.numBytes < 1 || meta.numBytes > 3)
-            continue;
+        if (port < 0 || meta.numBytes < 1 || meta.numBytes > 3)
+            return true;
 
         int start1, size1, start2, size2;
         midiOutFifo.prepareToWrite (1, start1, size1, start2, size2);
 
         // Full queue: drop rather than block the audio thread
         if (size1 + size2 < 1)
-            return;
+            return false;
 
         auto& slot = midiOutQueue[(size_t) (size1 > 0 ? start1 : start2)];
         std::memcpy (slot.bytes, meta.data, (size_t) meta.numBytes);
         slot.size     = (juce::uint8) meta.numBytes;
+        slot.port     = (juce::uint8) port;
         slot.sendAtMs = blockStartMs + meta.samplePosition * msPerSmp;
 
         midiOutFifo.finishedWrite (1);
+        return true;
+    };
+
+    auto itA = generatedMidi[0].begin(), endA = generatedMidi[0].end();
+    auto itB = generatedMidi[1].begin(), endB = generatedMidi[1].end();
+
+    while (itA != endA || itB != endB)
+    {
+        const bool takeA = itB == endB
+                        || (itA != endA && (*itA).samplePosition <= (*itB).samplePosition);
+
+        if (! (takeA ? push (*itA++, dest[0]) : push (*itB++, dest[1])))
+            return;
     }
 }
 
@@ -383,8 +480,11 @@ void PolyrhythmProcessor::drainMidiOutQueue (bool discardAll)
                 if (slot.sendAtMs > nowMs)
                     return false;
 
-                if (midiOutDevice != nullptr && slot.size > 0)
-                    midiOutDevice->sendMessageNow (juce::MidiMessage (slot.bytes, (int) slot.size));
+                // A port closed since this was queued just drops the message
+                auto& device = outputPorts[(size_t) slot.port].device;
+
+                if (device != nullptr && slot.size > 0)
+                    device->sendMessageNow (juce::MidiMessage (slot.bytes, (int) slot.size));
 
                 ++sent;
             }
@@ -397,18 +497,6 @@ void PolyrhythmProcessor::drainMidiOutQueue (bool discardAll)
     }
 
     midiOutFifo.finishedRead (sent);
-}
-
-juce::String PolyrhythmProcessor::getMidiOutputIdentifier() const
-{
-    const juce::ScopedLock sl (midiOutLock);
-    return midiOutIdentifier;
-}
-
-juce::String PolyrhythmProcessor::getMidiOutputName() const
-{
-    const juce::ScopedLock sl (midiOutLock);
-    return midiOutDevice != nullptr ? midiOutDevice->getName() : juce::String();
 }
 
 //==============================================================================
@@ -451,10 +539,11 @@ void PolyrhythmProcessor::resetCutoffCC()
     lastCutoffCC.fill (-1);
 }
 
-void PolyrhythmProcessor::flushPendingNoteOffs (juce::MidiBuffer& midiOut, int sampleOffset)
+void PolyrhythmProcessor::flushPendingNoteOffs (int sampleOffset)
 {
     for (auto& noff : pendingNoteOffs)
-        midiOut.addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note), sampleOffset);
+        generatedMidi[(size_t) noff.track].addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note),
+                                                     sampleOffset);
 
     pendingNoteOffs.clear();
 }
@@ -471,7 +560,8 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     // Everything we generate lands here first. midiMessages arrives holding the host's
     // input, which is passed through to the instrument downstream but must never be fed
     // back to the external port.
-    generatedMidi.clear();
+    for (auto& buffer : generatedMidi)
+        buffer.clear();
 
     auto* playHead = getPlayHead();
     auto  posOpt   = playHead != nullptr ? playHead->getPosition()
@@ -490,9 +580,9 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         {
             // Close every note we still have hanging, then belt-and-braces all-notes-off
             // on both channels so nothing sticks in the instrument downstream
-            flushPendingNoteOffs (generatedMidi, 0);
-            generatedMidi.addEvent (juce::MidiMessage::allNotesOff (getTrackAChannel()), 0);
-            generatedMidi.addEvent (juce::MidiMessage::allNotesOff (getTrackBChannel()), 0);
+            flushPendingNoteOffs (0);
+            generatedMidi[0].addEvent (juce::MidiMessage::allNotesOff (getTrackAChannel()), 0);
+            generatedMidi[1].addEvent (juce::MidiMessage::allNotesOff (getTrackBChannel()), 0);
 
             wasPlaying     = false;
             ppqCursorValid = false;
@@ -543,7 +633,7 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
         // the jump, and drop note-offs that belong to the old playback position. The
         // cursor has to be moved too: on a loop back it is ahead of the new position, and
         // leaving it there would stall the sequencer until playback caught up again.
-        flushPendingNoteOffs (generatedMidi, 0);
+        flushPendingNoteOffs (0);
         resetCutoffCC();
         ppqCursorValid = true;
         nextPpq        = blockStartPpq;
@@ -562,13 +652,13 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
             if (noff.samplesRemaining < numSamples)
             {
-                generatedMidi.addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note),
+                generatedMidi[(size_t) noff.track].addEvent (juce::MidiMessage::noteOff (noff.channel, noff.note),
                                         noff.samplesRemaining);
             }
             else
             {
                 pendingNoteOffs[keep++] = { noff.samplesRemaining - numSamples,
-                                            noff.channel, noff.note };
+                                            noff.channel, noff.note, noff.track };
             }
         }
         pendingNoteOffs.resize (keep);
@@ -577,9 +667,9 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     if (numSamples > 0 && blockEndPpq > windowStartPpq)
     {
         processTrack (true,  barLengthPpq, barAnchorPpq, windowStartPpq, blockEndPpq,
-                      blockStartPpq, ppqPerSample, numSamples, generatedMidi);
+                      blockStartPpq, ppqPerSample, numSamples, generatedMidi[0]);
         processTrack (false, barLengthPpq, barAnchorPpq, windowStartPpq, blockEndPpq,
-                      blockStartPpq, ppqPerSample, numSamples, generatedMidi);
+                      blockStartPpq, ppqPerSample, numSamples, generatedMidi[1]);
     }
 
     nextPpq = juce::jmax (nextPpq, blockEndPpq);
@@ -589,17 +679,16 @@ void PolyrhythmProcessor::processBlock (juce::AudioBuffer<float>& buffer,
 
 //==============================================================================
 /*  Generated notes go two places: into the host's buffer, where they join the
-    pass-through input on the way to the instrument, and onto the external port. Only the
-    generated half reaches the port — see queueForExternalMidiOut.
+    pass-through input on the way to the instrument, and onto each rhythm's external
+    port. Only the generated half reaches a port; see queueForExternalMidiOut.
 */
 void PolyrhythmProcessor::publishGeneratedMidi (juce::MidiBuffer& hostBuffer, int numSamples)
 {
-    queueForExternalMidiOut (generatedMidi, numSamples);
+    queueForExternalMidiOut (numSamples);
 
-    if (generatedMidi.isEmpty())
-        return;
-
-    hostBuffer.addEvents (generatedMidi, 0, numSamples > 0 ? numSamples : -1, 0);
+    for (const auto& buffer : generatedMidi)
+        if (! buffer.isEmpty())
+            hostBuffer.addEvents (buffer, 0, numSamples > 0 ? numSamples : -1, 0);
 }
 
 //==============================================================================
@@ -613,6 +702,11 @@ void PolyrhythmProcessor::processTrack (bool isTrackA,
                                          int    numSamples,
                                          juce::MidiBuffer& midiOut)
 {
+    // A rhythm that is switched off starts no new notes. Its note-offs still go out,
+    // through the pending list, so switching off mid-note leaves nothing hanging.
+    if (! isTrackOn (isTrackA))
+        return;
+
     const int   beatCount = isTrackA ? getTrackABeatCount() : getTrackBBeatCount();
     const int   channel   = isTrackA ? getTrackAChannel()   : getTrackBChannel();
     const float prob      = getProbability();
@@ -717,7 +811,8 @@ void PolyrhythmProcessor::processTrack (bool isTrackA,
             else if (pendingNoteOffs.size() < pendingNoteOffs.capacity())
             {
                 // Guarded against growth so the audio thread never allocates here
-                pendingNoteOffs.push_back ({ noteOffSample - numSamples, channel, beatNote });
+                pendingNoteOffs.push_back ({ noteOffSample - numSamples, channel, beatNote,
+                                             isTrackA ? 0 : 1 });
             }
         }
     }
@@ -760,6 +855,8 @@ void PolyrhythmProcessor::getStateInformation (juce::MemoryBlock& destData)
     beatTree.setProperty ("scaleRoot",     scaleRoot.load(),         nullptr);
     beatTree.setProperty ("scaleType",     scaleType.load(),         nullptr);
     beatTree.setProperty ("midiOutDevice", getMidiOutputIdentifier(), nullptr);
+    beatTree.setProperty ("midiOutDeviceA", getTrackMidiOutputIdentifier (true),  nullptr);
+    beatTree.setProperty ("midiOutDeviceB", getTrackMidiOutputIdentifier (false), nullptr);
     beatTree.setProperty ("editorW",       editorWidth.load(),       nullptr);
     beatTree.setProperty ("editorH",       editorHeight.load(),      nullptr);
     state.addChild (beatTree, -1, nullptr);
@@ -816,18 +913,9 @@ void PolyrhythmProcessor::setStateInformation (const void* data, int sizeInBytes
         editorHeight.store (juce::jmax (EDITOR_BASE_H / 2,
                                         (int) beatTree.getProperty ("editorH", EDITOR_BASE_H)));
 
-        const juce::String savedDevice = beatTree.getProperty ("midiOutDevice", "").toString();
-
-        if (savedDevice != getMidiOutputIdentifier())
-        {
-            // Only reopen if that device is actually present on this machine
-            const auto devices = getMidiOutputDevices();
-            const bool stillAvailable = savedDevice.isNotEmpty()
-                && std::any_of (devices.begin(), devices.end(),
-                                [&] (const juce::MidiDeviceInfo& d) { return d.identifier == savedDevice; });
-
-            setMidiOutputDevice (stillAvailable ? savedDevice : juce::String());
-        }
+        restorePortDevice (mainPort,   beatTree.getProperty ("midiOutDevice",  "").toString());
+        restorePortDevice (trackAPort, beatTree.getProperty ("midiOutDeviceA", "").toString());
+        restorePortDevice (trackBPort, beatTree.getProperty ("midiOutDeviceB", "").toString());
     }
 
     uiStateVersion.fetch_add (1);

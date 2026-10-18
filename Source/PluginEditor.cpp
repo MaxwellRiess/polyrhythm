@@ -412,6 +412,23 @@ RhythmTrackComponent::RhythmTrackComponent (PolyrhythmProcessor& p, bool isA)
     randomBtn.onClick = [this] { showRandomiseMenu (processor, randomBtn, trackA, ! trackA); };
     addAndMakeVisible (randomBtn);
 
+    // Per-rhythm output
+    onBtn.setClickingTogglesState (true);
+    onBtn.setColour (juce::TextButton::buttonColourId,   Theme::BeatBg);
+    onBtn.setColour (juce::TextButton::buttonOnColourId, Theme::Accent);
+    onBtn.setColour (juce::TextButton::textColourOnId,   Theme::TextPrimary);
+    onBtn.setColour (juce::TextButton::textColourOffId,  Theme::TextDim);
+    onBtn.setTooltip ("Switch this rhythm on or off");
+    addAndMakeVisible (onBtn);
+    onAttach = std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment>
+               (processor.apvts, isA ? "trackA_on" : "trackB_on", onBtn);
+
+    portBtn.setColour (juce::TextButton::buttonColourId, Theme::BeatBg);
+    portBtn.setTooltip ("MIDI port for this rhythm. MAIN follows MIDI OUT in the header.");
+    portBtn.onClick = [this] { showPortMenu(); };
+    addAndMakeVisible (portBtn);
+    updatePortButton();
+
     addAndMakeVisible (decBtn);
     addAndMakeVisible (incBtn);
     decBtn.onClick    = [this] { changeBeatCount (-1); };
@@ -625,11 +642,54 @@ void RhythmTrackComponent::setUiScale (float newScale)
             pad->setUiScale (newScale);
 }
 
+void RhythmTrackComponent::updatePortButton()
+{
+    const auto name = processor.getTrackMidiOutputName (trackA);
+    const bool own  = name.isNotEmpty();
+
+    portBtn.setButtonText (own ? name : juce::String ("OUT: MAIN"));
+    portBtn.setColour (juce::TextButton::textColourOffId, own ? Theme::MidiGreen : Theme::TextDim);
+}
+
+void RhythmTrackComponent::showPortMenu()
+{
+    const auto devices = PolyrhythmProcessor::getMidiOutputDevices();
+    const auto current = processor.getTrackMidiOutputIdentifier (trackA);
+
+    juce::PopupMenu menu;
+    menu.addItem (1, "Main (MIDI OUT)", true, current.isEmpty());
+    menu.addSeparator();
+
+    if (devices.isEmpty())
+        menu.addItem (2, "No MIDI outputs found", false, false);
+
+    for (int i = 0; i < devices.size(); ++i)
+        menu.addItem (i + 10, devices[i].name, true, devices[i].identifier == current);
+
+    menu.addSeparator();
+    menu.addItem (3, "Give each rhythm its own IAC bus to record them on separate tracks",
+                  false, false);
+
+    menu.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (portBtn),
+                        [this, devices] (int result)
+                        {
+                            if (result <= 0 || result == 2 || result == 3) return;
+
+                            processor.setTrackMidiOutputDevice (trackA, result == 1
+                                ? juce::String()
+                                : devices[result - 10].identifier);
+
+                            processor.markBeatStateEdited();
+                            updatePortButton();
+                        });
+}
+
 void RhythmTrackComponent::refreshAll()
 {
     updateBeatCountLabel();
     updateNoteLabel();
     updateChannelLabel();
+    updatePortButton();
 
     for (auto& pad : pads)
     {
@@ -668,9 +728,11 @@ void RhythmTrackComponent::resized()
     const int btnH = 24;
 
     // Header
-    trackNameLabel.setBounds (12, 8,     180, 20);
+    trackNameLabel.setBounds (12, 8,     120, 20);
     channelBtn.setBounds     (w - 66, 8, 58,  20);
     randomBtn.setBounds      (w - 116, 8, 44, 20);
+    onBtn.setBounds          (w - 158, 8, 36, 20);
+    portBtn.setBounds        (w - 274, 8, 110, 20);
 
     // Left column: beats row, then note row (scrollable) + reset button
     const int beatsY = 46;
